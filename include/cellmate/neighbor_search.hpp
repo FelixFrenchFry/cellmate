@@ -33,6 +33,7 @@ namespace cellmate
 			point_order_.clear();
 			cell_keys_.clear();
 			cell_starts_.clear();
+			cell_cache_.fill(CellCacheEntry{});
 
 			// validate input
 			if (N_points == 0) { return; }
@@ -102,6 +103,7 @@ namespace cellmate
 		}
 
 		// TODO: XML documentation?
+		// WARNING: concurrent queries on the same object not supported yet! only one thread at a time!
 		void find_neighbors(std::array<float, 3> query_pos, std::vector<std::size_t>& neighbors) const
 		{
 			neighbors.clear();
@@ -152,10 +154,8 @@ namespace cellmate
 					for (uint32_t x = begin[0]; x <= end[0]; x++)
 					{
 						const uint64_t key = yz_code | spread_bits(x);
-						const auto cell = std::lower_bound(cell_keys_.begin(), cell_keys_.end(), key);
-						if (cell == cell_keys_.end() || *cell != key) { continue; }
-
-						const std::size_t cell_idx = static_cast<std::size_t>(cell - cell_keys_.begin());
+						const std::size_t cell_idx = find_cell(key);
+						if (cell_idx == cell_keys_.size()) { continue; }
 
 						// collect original indices of points within the search radius
 						for (std::size_t i = cell_starts_[cell_idx]; i < cell_starts_[cell_idx + 1]; i++)
@@ -184,6 +184,13 @@ namespace cellmate
 			std::size_t idx;
 		};
 
+		struct CellCacheEntry
+		{
+			// invalid Morton key marks an unused entry
+			uint64_t key = (std::numeric_limits<uint64_t>::max)();
+			std::size_t idx = 0;
+		};
+
 		double radius_;
 		std::array<const float*, 3> positions_{};
 		std::array<float, 3> origin_{};
@@ -191,6 +198,25 @@ namespace cellmate
 		std::vector<PointEntry> point_order_;
 		std::vector<uint64_t> cell_keys_;
 		std::vector<std::size_t> cell_starts_;
+
+		// cell lookup cache stores cell indices and empty-cell results
+		mutable std::array<CellCacheEntry, 256> cell_cache_{};
+
+		// reuse the cached result if its key matches, otherwise search and replace it
+		std::size_t find_cell(uint64_t key) const
+		{
+			const std::size_t slot = static_cast<std::size_t>(key ^ (key >> 32)) & (cell_cache_.size() - 1);
+			CellCacheEntry& entry = cell_cache_[slot];
+			if (entry.key == key) { return entry.idx; }
+
+			const std::vector<uint64_t>::const_iterator cell = std::lower_bound(cell_keys_.begin(), cell_keys_.end(), key);
+			entry.key = key;
+			entry.idx = cell == cell_keys_.end() || *cell != key
+				? cell_keys_.size()
+				: static_cast<std::size_t>(cell - cell_keys_.begin());
+			
+			return entry.idx;
+		}
 
 		// convert a position to a cell coordinate relative to the grid origin
 		uint32_t cell_coord(float p, std::size_t axis) const
