@@ -18,8 +18,8 @@ int main()
 	std::vector<std::size_t> neighbors;
 	search.find_neighbors({ 0.0f, 0.0f, 0.0f }, neighbors);
 
-	std::cout << "Expected neighbor indices: 0 1 3 5\n";
-	std::cout << "Actual neighbor indices: ";
+	std::cout << "Expected neighbor set: 0 1 3 5\n";
+	std::cout << "Actual neighbor set: ";
 	for (std::size_t index : neighbors)
 	{
 		std::cout << index << ' ';
