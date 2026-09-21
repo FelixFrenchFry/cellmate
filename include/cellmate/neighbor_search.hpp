@@ -131,7 +131,6 @@ namespace cellmate
 							const double dx = double(query_pos[0]) - positions_[0][idx];
 							const double dy = double(query_pos[1]) - positions_[1][idx];
 							const double dz = double(query_pos[2]) - positions_[2][idx];
-
 							if (dx * dx + dy * dy + dz * dz <= radius_ * radius_)
 							{
 								neighbors.push_back(idx);
@@ -171,6 +170,8 @@ namespace cellmate
 		// per-chunk radix counts, then write offsets
 		// (only used for parallel sorting, but always declared to keep class layout consistent)
 		std::vector<std::array<std::size_t, 256>> radix_offsets_;
+		// per-chunk cell counts, then write offsets for parallel cell-table construction
+		std::vector<std::size_t> cell_chunk_offsets_;
 
 		// cell lookup cache stores cell indices and empty-cell results
 		mutable std::array<CellCacheEntry, 512> cell_cache_{};
@@ -292,7 +293,7 @@ namespace cellmate
 
 			sort_point_order_par(N_threads);
 
-			build_cell_table();
+			build_cell_table_par(N_threads);
 		}
 
 		// stable radix sort of point indices by Morton key, parallel version
@@ -382,6 +383,65 @@ namespace cellmate
 
 			// odd pass counts leave the sorted entries in scratch
 			if (src != point_order_.data()) { point_order_.swap(point_order_scratch_); }
+		}
+
+		// fill cell table with occupied cell keys and start offsets, parallel version
+		void build_cell_table_par(int N_threads)
+		{
+			const std::size_t N_points = point_order_.size();
+
+			// divide entries into chunks for parallel counting and filling
+			const std::size_t chunk_size = 4096;
+			const std::ptrdiff_t N_chunks = static_cast<std::ptrdiff_t>(
+				N_points / chunk_size + (N_points % chunk_size != 0));
+			const int N_build_threads = static_cast<int>(
+				(std::min)(static_cast<std::ptrdiff_t>(N_threads), N_chunks));
+			cell_chunk_offsets_.resize(N_chunks);
+
+			// count cell starts separately for each chunk
+			#pragma omp parallel for schedule(static) num_threads(N_build_threads)
+			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
+			{
+				const std::size_t begin = static_cast<std::size_t>(chunk) * chunk_size;
+				const std::size_t end = begin + (std::min)(chunk_size, N_points - begin);
+				std::size_t count = 0;
+				for (std::size_t i = begin; i < end; i++)
+				{
+					if (i == 0 || point_order_[i].key != point_order_[i - 1].key) { count++; }
+				}
+				cell_chunk_offsets_[chunk] = count;
+			}
+
+			// convert counts into output positions in chunk order
+			std::size_t N_cells = 0;
+			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
+			{
+				const std::size_t count = cell_chunk_offsets_[chunk];
+				cell_chunk_offsets_[chunk] = N_cells;
+				N_cells += count;
+			}
+
+			// prepare output arrays, including the final cell range end
+			cell_keys_.resize(N_cells);
+			cell_starts_.resize(N_cells + 1);
+
+			// fill each chunk's output range while preserving cell order
+			#pragma omp parallel for schedule(static) num_threads(N_build_threads)
+			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
+			{
+				const std::size_t begin = static_cast<std::size_t>(chunk) * chunk_size;
+				const std::size_t end = begin + (std::min)(chunk_size, N_points - begin);
+				std::size_t offset = cell_chunk_offsets_[chunk];
+				for (std::size_t i = begin; i < end; i++)
+				{
+					if (i != 0 && point_order_[i].key == point_order_[i - 1].key) { continue; }
+					cell_keys_[offset] = point_order_[i].key;
+					cell_starts_[offset] = i;
+					offset++;
+				}
+			}
+
+			cell_starts_[N_cells] = N_points; // end of the last cell
 		}
 #endif
 
