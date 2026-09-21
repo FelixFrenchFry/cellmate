@@ -53,6 +53,7 @@ namespace cellmate
 			if (exec == Exec::par &&
 				N_points <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
+				// TODO: add condition for the min number of points per thread to avoid OpenMP overhead?
 				rebuild_par(x, y, z, static_cast<std::ptrdiff_t>(N_points));
 			}
 			else
@@ -164,8 +165,13 @@ namespace cellmate
 		std::vector<uint64_t> cell_keys_;
 		std::vector<std::size_t> cell_starts_;
 
+		// reusable entry buffer and per-chunk radix counts, then write offsets
+		// (only used for parallel sorting, but always declared to keep class layout consistent)
+		std::vector<PointEntry> point_order_scratch_;
+		std::vector<std::array<std::size_t, 256>> radix_offsets_;
+
 		// cell lookup cache stores cell indices and empty-cell results
-		mutable std::array<CellCacheEntry, 256> cell_cache_{};
+		mutable std::array<CellCacheEntry, 512> cell_cache_{};
 
 		void rebuild_seq(const float* x, const float* y, const float* z, std::size_t N_points)
 		{
@@ -201,7 +207,13 @@ namespace cellmate
 				point_order_[i] = { morton_key(cx, cy, cz), i };
 			}
 
-			sort_point_order();
+			// sort point indices by Morton key
+			std::sort(point_order_.begin(), point_order_.end(),
+				[](const PointEntry& a, const PointEntry& b)
+				{
+					return a.key < b.key || (a.key == b.key && a.idx < b.idx);
+				});
+			
 			build_cell_table(N_points);
 		}
 
@@ -268,21 +280,87 @@ namespace cellmate
 				point_order_[i] = { morton_key(cx, cy, cz), static_cast<std::size_t>(i) };
 			}
 
-			sort_point_order();
+			sort_point_order_par();
 			build_cell_table(N_points);
 		}
-#endif
 
-		// sort point indices by Morton key
-		void sort_point_order()
+		void sort_point_order_par()
 		{
-			// TODO: use faster sorting algo?
-			std::sort(point_order_.begin(), point_order_.end(),
-				[](const PointEntry& a, const PointEntry& b)
+			const std::size_t N_points = point_order_.size();
+			const uint64_t max_key = morton_key(last_cell_[0], last_cell_[1], last_cell_[2]);
+			if (N_points < 2 || max_key == 0) { return; }
+
+			uint32_t N_passes = 0;
+			for (uint64_t key = max_key; key != 0; key >>= 8) { N_passes++; }
+
+			const std::size_t chunk_size = 4096;
+			const std::ptrdiff_t N_chunks = static_cast<std::ptrdiff_t>(
+				N_points / chunk_size + (N_points % chunk_size != 0));
+			point_order_scratch_.resize(N_points);
+			radix_offsets_.resize(N_chunks);
+			PointEntry* src = point_order_.data();
+			PointEntry* dst = point_order_scratch_.data();
+
+			#pragma omp parallel
+			{
+				for (uint32_t pass = 0; pass < N_passes; pass++)
 				{
-					return a.key < b.key || (a.key == b.key && a.idx < b.idx);
-				});
+					const uint32_t shift = pass * 8;
+
+					// count each byte value separately for each chunk
+					#pragma omp for schedule(static)
+					for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
+					{
+						const std::size_t begin = static_cast<std::size_t>(chunk) * chunk_size;
+						const std::size_t end = begin + (std::min)(chunk_size, N_points - begin);
+						std::array<std::size_t, 256>& counts = radix_offsets_[chunk];
+						counts.fill(0);
+						for (std::size_t i = begin; i < end; i++)
+						{
+							counts[(src[i].key >> shift) & 255]++;
+						}
+					}
+
+					// assign disjoint output ranges in byte and chunk order
+					#pragma omp single
+					{
+						std::size_t offset = 0;
+						for (std::size_t digit = 0; digit < 256; digit++)
+						{
+							for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
+							{
+								const std::size_t count = radix_offsets_[chunk][digit];
+								radix_offsets_[chunk][digit] = offset;
+								offset += count;
+							}
+						}
+					}
+
+					// scatter entries while preserving equal-byte order
+					#pragma omp for schedule(static)
+					for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
+					{
+						const std::size_t begin = static_cast<std::size_t>(chunk) * chunk_size;
+						const std::size_t end = begin + (std::min)(chunk_size, N_points - begin);
+						std::array<std::size_t, 256>& offsets = radix_offsets_[chunk];
+						for (std::size_t i = begin; i < end; i++)
+						{
+							const std::size_t digit = (src[i].key >> shift) & 255;
+							dst[offsets[digit]++] = src[i];
+						}
+					}
+
+					#pragma omp single
+					{
+						std::swap(src, dst);
+					}
+				}
+			}
+
+			// odd pass counts leave the sorted entries in scratch
+			if (src != point_order_.data()) { point_order_.swap(point_order_scratch_); }
 		}
+#endif
 
 		// store each occupied cell's key and starting point offset
 		void build_cell_table(std::size_t N_points)
