@@ -23,7 +23,7 @@ int main()
 	for (std::size_t i = 0; i < N_points; i++)
 	{
 		const std::array<float, 3> query_pos{ points.x[i], points.y[i], points.z[i] };
-		search.find_neighbors(query_pos, neighbors);
+		search.query(query_pos, neighbors);
 
 		cellmate_test::brute_force(points.x.data(), points.y.data(), points.z.data(),
 			N_points, radius, query_pos, expected);
@@ -51,7 +51,7 @@ int main()
 
 		for (float qx : queries)
 		{
-			search.find_neighbors({ qx, 0.0f, 0.0f }, neighbors);
+			search.query({ qx, 0.0f, 0.0f }, neighbors);
 			cellmate_test::brute_force(x, y, z, count, radius, { qx, 0.0f, 0.0f }, expected);
 
 			// (output order of the neighbor search result does not matter)

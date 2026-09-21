@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -24,6 +25,7 @@ namespace cellmate
 		par
 	};
 
+	// TODO: XML documentation?
 	class NeighborSearch
 	{
 	public:
@@ -40,7 +42,7 @@ namespace cellmate
 		void rebuild(const float* x, const float* y, const float* z, std::size_t N_points, Exec exec = Exec::par)
 		{
 			positions_ = {};
-			cell_cache_.fill(CellCacheEntry{});
+			build_id_.reset();
 
 			// point order and cell table keep their storage, so resize() does not zero-fill them
 			// (each rebuild path must overwrite all entries after resize() or clear before appending)
@@ -74,19 +76,28 @@ namespace cellmate
 			rebuild_seq(x, y, z, N_points);
 #endif
 
+			build_id_ = std::make_shared<QueryContext::BuildId>();
 			positions_ = { x, y, z };
 		}
 
 		// TODO: XML documentation?
-		// WARNING: concurrent queries on the same object not supported yet! only one thread at a time!
-		void find_neighbors(std::array<float, 3> query_pos, std::vector<std::size_t>& neighbors) const
+		void query(std::array<float, 3> query_pos, std::vector<std::size_t>& neighbors) const
 		{
+			// reuse a separate cache on each calling thread
+			static thread_local QueryContext context;
 			neighbors.clear();
+
+			// clear cached cell indices when the context switches to a different build
+			if (context.build_id_ != build_id_)
+			{
+				context.cell_cache_.fill(QueryContext::CellCacheEntry{});
+				context.build_id_ = build_id_;
+			}
 
 			if (!positions_[0]) { return; }
 			if (!std::isfinite(query_pos[0]) || !std::isfinite(query_pos[1]) || !std::isfinite(query_pos[2]))
 			{
-				throw std::invalid_argument("cellmate::find_neighbors() query position must be finite");
+				throw std::invalid_argument("cellmate::query() query position must be finite");
 			}
 
 			// query position relative to the grid in cell units
@@ -126,7 +137,7 @@ namespace cellmate
 					for (uint32_t x = begin[0]; x <= end[0]; x++)
 					{
 						const uint64_t key = yz_code | spread_bits(x);
-						const std::size_t cell_idx = find_cell(key);
+						const std::size_t cell_idx = find_cell(key, context);
 						if (cell_idx == cell_keys_.size()) { continue; }
 
 						// collect original indices of points within the search radius
@@ -148,18 +159,27 @@ namespace cellmate
 
 	private:
 
+		// reusable cell lookup cache for one querying thread
+		struct QueryContext
+		{
+			struct CellCacheEntry
+			{
+				// invalid Morton key marks an unused entry
+				uint64_t key = (std::numeric_limits<uint64_t>::max)();
+				std::size_t idx = 0;
+			};
+
+			// track build identity to prevent stale cache reuse
+			struct BuildId {};
+			std::shared_ptr<const BuildId> build_id_;
+			std::array<CellCacheEntry, 512> cell_cache_{};
+		};
+
 		// TODO: go without struct?
 		struct PointEntry
 		{
 			uint64_t key;
 			std::size_t idx;
-		};
-
-		struct CellCacheEntry
-		{
-			// invalid Morton key marks an unused entry
-			uint64_t key = (std::numeric_limits<uint64_t>::max)();
-			std::size_t idx = 0;
 		};
 
 		double radius_;
@@ -178,8 +198,7 @@ namespace cellmate
 		// per-chunk cell counts, then write offsets for parallel cell-table construction
 		std::vector<std::size_t> cell_chunk_offsets_;
 
-		// cell lookup cache stores cell indices and empty-cell results
-		mutable std::array<CellCacheEntry, 512> cell_cache_{};
+		std::shared_ptr<const QueryContext::BuildId> build_id_;
 
 		void rebuild_seq(const float* x, const float* y, const float* z, std::size_t N_points)
 		{
@@ -544,10 +563,10 @@ namespace cellmate
 		}
 
 		// reuse the cached result if its key matches, otherwise search and replace it
-		std::size_t find_cell(uint64_t key) const
+		std::size_t find_cell(uint64_t key, QueryContext& context) const
 		{
-			const std::size_t slot = static_cast<std::size_t>(key ^ (key >> 32)) & (cell_cache_.size() - 1);
-			CellCacheEntry& entry = cell_cache_[slot];
+			const std::size_t slot = static_cast<std::size_t>(key ^ (key >> 32)) & (context.cell_cache_.size() - 1);
+			QueryContext::CellCacheEntry& entry = context.cell_cache_[slot];
 			if (entry.key == key) { return entry.idx; }
 
 			const std::vector<uint64_t>::const_iterator cell = std::lower_bound(cell_keys_.begin(), cell_keys_.end(), key);
