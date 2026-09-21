@@ -321,6 +321,7 @@ namespace cellmate
 			// prepare output buffer and per-chunk byte counts
 			point_order_scratch_.resize(N_points);
 			radix_offsets_.resize(N_chunks);
+			std::array<std::size_t, 256> digit_offsets;
 			PointEntry* src = point_order_.data();
 			PointEntry* dst = point_order_scratch_.data();
 
@@ -345,18 +346,29 @@ namespace cellmate
 						}
 					}
 
-					// convert counts into output positions in byte and chunk order
+					// convert chunk counts into offsets for output range of each byte
+					#pragma omp for schedule(static)
+					for (int digit = 0; digit < 256; digit++)
+					{
+						std::size_t offset = 0;
+						for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
+						{
+							const std::size_t count = radix_offsets_[chunk][digit];
+							radix_offsets_[chunk][digit] = offset;
+							offset += count;
+						}
+						digit_offsets[digit] = offset;
+					}
+
+					// convert byte totals into starting output positions
 					#pragma omp single
 					{
 						std::size_t offset = 0;
 						for (std::size_t digit = 0; digit < 256; digit++)
 						{
-							for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
-							{
-								const std::size_t count = radix_offsets_[chunk][digit];
-								radix_offsets_[chunk][digit] = offset;
-								offset += count;
-							}
+							const std::size_t count = digit_offsets[digit];
+							digit_offsets[digit] = offset;
+							offset += count;
 						}
 					}
 
@@ -370,7 +382,7 @@ namespace cellmate
 						for (std::size_t i = begin; i < end; i++)
 						{
 							const std::size_t digit = (src[i].key >> shift) & 255;
-							dst[offsets[digit]++] = src[i];
+							dst[digit_offsets[digit] + offsets[digit]++] = src[i];
 						}
 					}
 
