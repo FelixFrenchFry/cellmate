@@ -40,12 +40,17 @@ namespace cellmate
 		void rebuild(const float* x, const float* y, const float* z, std::size_t N_points, Exec exec = Exec::par)
 		{
 			positions_ = {};
-			point_order_.clear();
-			cell_keys_.clear();
-			cell_starts_.clear();
 			cell_cache_.fill(CellCacheEntry{});
 
-			if (N_points == 0) { return; }
+			// point order and cell table keep their storage, so resize() does not zero-fill them
+			// (each rebuild path must overwrite all entries after resize() or clear before appending)
+			if (N_points == 0)
+			{
+				point_order_.clear();
+				cell_keys_.clear();
+				cell_starts_.clear();
+				return;
+			}
 			if (!x || !y || !z)
 			{
 				throw std::invalid_argument("cellmate::rebuild() requires three coordinate arrays");
@@ -212,7 +217,7 @@ namespace cellmate
 
 			sort_point_order_seq();
 			
-			build_cell_table();
+			build_cell_table_seq();
 		}
 
 #ifdef _OPENMP
@@ -434,6 +439,7 @@ namespace cellmate
 			}
 
 			// prepare output arrays, including the final cell range end
+			// (no clearing needed, every entry is overwritten below)
 			cell_keys_.resize(N_cells);
 			cell_starts_.resize(N_cells + 1);
 
@@ -514,10 +520,15 @@ namespace cellmate
 			if (src != point_order_.data()) { point_order_.swap(point_order_scratch_); }
 		}
 
-		// store each occupied cell's key and starting point offset
-		void build_cell_table()
+		// fill cell table with occupied cell keys and start offsets, sequential version
+		void build_cell_table_seq()
 		{
+			cell_keys_.clear();
+			cell_starts_.clear();
+
 			const std::size_t N_points = point_order_.size();
+
+			// fill output range while preserving cell order
 			std::size_t begin = 0;
 			for (std::size_t end = 1; end <= N_points; end++)
 			{
