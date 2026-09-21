@@ -14,6 +14,12 @@ namespace cellmate
 	using std::uint32_t;
 	using std::uint64_t;
 
+	enum class Exec
+	{
+		seq,
+		par
+	};
+
 	class NeighborSearch
 	{
 	public:
@@ -27,8 +33,9 @@ namespace cellmate
 		}
 
 		// TODO: XML documentation?
-		void rebuild(const float* x, const float* y, const float* z, std::size_t N_points)
+		void rebuild(const float* x, const float* y, const float* z, std::size_t N_points, Exec exec = Exec::par)
 		{
+			// clear previous state
 			positions_ = {};
 			point_order_.clear();
 			cell_keys_.clear();
@@ -42,64 +49,22 @@ namespace cellmate
 				throw std::invalid_argument("cellmate::rebuild() requires three coordinate arrays");
 			}
 
-			const std::array<const float*, 3> positions{ x, y, z };
-
-			// place the local grid origin at the minimum (x,y,z) to avoid negative Morton keys
-			origin_ = { x[0], y[0], z[0] };
-			last_cell_ = {};
-			for (std::size_t i = 0; i < N_points; i++)
+#ifdef _OPENMP
+			if (exec == Exec::par &&
+				N_points <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
-				if (!std::isfinite(x[i]) ||
-					!std::isfinite(y[i]) ||
-					!std::isfinite(z[i]))
-				{
-					throw std::invalid_argument("cellmate::rebuild() coordinates must be finite");
-				}
-
-				origin_[0] = (std::min)(origin_[0], x[i]);
-				origin_[1] = (std::min)(origin_[1], y[i]);
-				origin_[2] = (std::min)(origin_[2], z[i]);
+				rebuild_par(x, y, z, static_cast<std::ptrdiff_t>(N_points));
 			}
-
-			// assign Morton keys to each point
-			point_order_.resize(N_points); // TODO: find alternative that grows with extra margin to avoid repeated allocations?
-			for (std::size_t i = 0; i < N_points; i++)
+			else
 			{
-				const uint32_t cx = cell_coord(x[i], 0);
-				const uint32_t cy = cell_coord(y[i], 1);
-				const uint32_t cz = cell_coord(z[i], 2);
-
-				last_cell_[0] = (std::max)(last_cell_[0], cx);
-				last_cell_[1] = (std::max)(last_cell_[1], cy);
-				last_cell_[2] = (std::max)(last_cell_[2], cz);
-
-				// store Morton key and point index from the original input array
-				point_order_[i] = { morton_key(cx, cy, cz), i };
+				rebuild_seq(x, y, z, N_points);
 			}
+#else
+			(void)exec;
+			rebuild_seq(x, y, z, N_points);
+#endif
 
-			// sort point indices by Morton key
-			// TODO: use faster sorting algo?
-			std::sort(point_order_.begin(), point_order_.end(),
-				[](const PointEntry& a, const PointEntry& b)
-				{
-					return a.key < b.key || (a.key == b.key && a.idx < b.idx);
-				});
-
-			// store each occupied cell's key and starting point offset
-			std::size_t begin = 0;
-			for (std::size_t end = 1; end <= N_points; end++)
-			{
-				if (end == N_points || point_order_[end].key != point_order_[begin].key)
-				{
-					cell_keys_.push_back(point_order_[begin].key);
-					cell_starts_.push_back(begin);
-					begin = end;
-				}
-			}
-
-			cell_starts_.push_back(N_points); // end of the last cell
-
-			positions_ = positions;
+			positions_ = { x, y, z };
 		}
 
 		// TODO: XML documentation?
@@ -201,6 +166,140 @@ namespace cellmate
 
 		// cell lookup cache stores cell indices and empty-cell results
 		mutable std::array<CellCacheEntry, 256> cell_cache_{};
+
+		void rebuild_seq(const float* x, const float* y, const float* z, std::size_t N_points)
+		{
+			// compute minimum and maximum (x,y,z)
+			std::array<float, 3> minimum{ x[0], y[0], z[0] };
+			std::array<float, 3> maximum = minimum;
+			for (std::size_t i = 0; i < N_points; i++)
+			{
+				if (!std::isfinite(x[i]) || !std::isfinite(y[i]) || !std::isfinite(z[i]))
+				{
+					throw std::invalid_argument("cellmate::rebuild() coordinates must be finite");
+				}
+
+				minimum[0] = (std::min)(minimum[0], x[i]);
+				minimum[1] = (std::min)(minimum[1], y[i]);
+				minimum[2] = (std::min)(minimum[2], z[i]);
+				maximum[0] = (std::max)(maximum[0], x[i]);
+				maximum[1] = (std::max)(maximum[1], y[i]);
+				maximum[2] = (std::max)(maximum[2], z[i]);
+			}
+
+			// set grid origin at the minimum (x,y,z) to avoid negative Morton keys and validate grid extent
+			origin_ = minimum;
+			last_cell_ = { cell_coord(maximum[0], 0), cell_coord(maximum[1], 1), cell_coord(maximum[2], 2) };
+
+			// assign Morton keys and original indices to each point
+			point_order_.resize(N_points); // TODO: find alternative that grows with extra margin to avoid repeated allocations?
+			for (std::size_t i = 0; i < N_points; i++)
+			{
+				const uint32_t cx = cell_coord(x[i], 0);
+				const uint32_t cy = cell_coord(y[i], 1);
+				const uint32_t cz = cell_coord(z[i], 2);
+				point_order_[i] = { morton_key(cx, cy, cz), i };
+			}
+
+			sort_point_order();
+			build_cell_table(N_points);
+		}
+
+#ifdef _OPENMP
+		void rebuild_par(const float* x, const float* y, const float* z, std::ptrdiff_t N_points)
+		{
+			// compute minimum and maximum (x,y,z)
+			// (compute local bounds per thread, then merge into grid bounds)
+			std::array<float, 3> minimum{ x[0], y[0], z[0] };
+			std::array<float, 3> maximum = minimum;
+			bool invalid = false;
+			#pragma omp parallel
+			{
+				std::array<float, 3> local_min{ x[0], y[0], z[0] };
+				std::array<float, 3> local_max = local_min;
+				bool local_invalid = false;
+
+				#pragma omp for schedule(static)
+				for (std::ptrdiff_t i = 0; i < N_points; i++)
+				{
+					if (!std::isfinite(x[i]) || !std::isfinite(y[i]) || !std::isfinite(z[i]))
+					{
+						local_invalid = true;
+						continue;
+					}
+
+					local_min[0] = (std::min)(local_min[0], x[i]);
+					local_min[1] = (std::min)(local_min[1], y[i]);
+					local_min[2] = (std::min)(local_min[2], z[i]);
+					local_max[0] = (std::max)(local_max[0], x[i]);
+					local_max[1] = (std::max)(local_max[1], y[i]);
+					local_max[2] = (std::max)(local_max[2], z[i]);
+				}
+
+				#pragma omp critical(cellmate_rebuild_bounds)
+				{
+					minimum[0] = (std::min)(minimum[0], local_min[0]);
+					minimum[1] = (std::min)(minimum[1], local_min[1]);
+					minimum[2] = (std::min)(minimum[2], local_min[2]);
+					maximum[0] = (std::max)(maximum[0], local_max[0]);
+					maximum[1] = (std::max)(maximum[1], local_max[1]);
+					maximum[2] = (std::max)(maximum[2], local_max[2]);
+					invalid = invalid || local_invalid;
+				}
+			}
+
+			if (invalid)
+			{
+				throw std::invalid_argument("cellmate::rebuild() coordinates must be finite");
+			}
+
+			// set grid origin at the minimum (x,y,z) to avoid negative Morton keys and validate grid extent
+			origin_ = minimum;
+			last_cell_ = { cell_coord(maximum[0], 0), cell_coord(maximum[1], 1), cell_coord(maximum[2], 2) };
+
+			// assign Morton keys and original indices to each point in parallel
+			point_order_.resize(N_points);
+			#pragma omp parallel for schedule(static)
+			for (std::ptrdiff_t i = 0; i < N_points; i++)
+			{
+				const uint32_t cx = cell_coord(x[i], 0);
+				const uint32_t cy = cell_coord(y[i], 1);
+				const uint32_t cz = cell_coord(z[i], 2);
+				point_order_[i] = { morton_key(cx, cy, cz), static_cast<std::size_t>(i) };
+			}
+
+			sort_point_order();
+			build_cell_table(N_points);
+		}
+#endif
+
+		// sort point indices by Morton key
+		void sort_point_order()
+		{
+			// TODO: use faster sorting algo?
+			std::sort(point_order_.begin(), point_order_.end(),
+				[](const PointEntry& a, const PointEntry& b)
+				{
+					return a.key < b.key || (a.key == b.key && a.idx < b.idx);
+				});
+		}
+
+		// store each occupied cell's key and starting point offset
+		void build_cell_table(std::size_t N_points)
+		{
+			std::size_t begin = 0;
+			for (std::size_t end = 1; end <= N_points; end++)
+			{
+				if (end == N_points || point_order_[end].key != point_order_[begin].key)
+				{
+					cell_keys_.push_back(point_order_[begin].key);
+					cell_starts_.push_back(begin);
+					begin = end;
+				}
+			}
+
+			cell_starts_.push_back(N_points); // end of the last cell
+		}
 
 		// reuse the cached result if its key matches, otherwise search and replace it
 		std::size_t find_cell(uint64_t key) const
