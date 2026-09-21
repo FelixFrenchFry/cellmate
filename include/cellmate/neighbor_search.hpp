@@ -77,7 +77,7 @@ namespace cellmate
 		void find_neighbors(std::array<float, 3> query_pos, std::vector<std::size_t>& neighbors) const
 		{
 			neighbors.clear();
-			
+
 			if (!positions_[0]) { return; }
 			if (!std::isfinite(query_pos[0]) || !std::isfinite(query_pos[1]) || !std::isfinite(query_pos[2]))
 			{
@@ -166,9 +166,10 @@ namespace cellmate
 		std::vector<uint64_t> cell_keys_;
 		std::vector<std::size_t> cell_starts_;
 
-		// reusable entry buffer and per-chunk radix counts, then write offsets
-		// (only used for parallel sorting, but always declared to keep class layout consistent)
+		// reusable entry buffer for sequential and parallel radix sorting
 		std::vector<PointEntry> point_order_scratch_;
+		// per-chunk radix counts, then write offsets
+		// (only used for parallel sorting, but always declared to keep class layout consistent)
 		std::vector<std::array<std::size_t, 256>> radix_offsets_;
 
 		// cell lookup cache stores cell indices and empty-cell results
@@ -208,13 +209,7 @@ namespace cellmate
 				point_order_[i] = { morton_key(cx, cy, cz), i };
 			}
 
-			// sort point indices by Morton key
-			// TODO: try to find faster sorting algo, e.g. pdqsort or custom radixsort?
-			std::sort(point_order_.begin(), point_order_.end(),
-				[](const PointEntry& a, const PointEntry& b)
-				{
-					return a.key < b.key || (a.key == b.key && a.idx < b.idx);
-				});
+			sort_point_order_seq();
 			
 			build_cell_table();
 		}
@@ -300,7 +295,7 @@ namespace cellmate
 			build_cell_table();
 		}
 
-		// stable radix sort of point indices by Morton key
+		// stable radix sort of point indices by Morton key, parallel version
 		void sort_point_order_par(int N_threads)
 		{
 			const std::size_t N_points = point_order_.size();
@@ -389,6 +384,63 @@ namespace cellmate
 			if (src != point_order_.data()) { point_order_.swap(point_order_scratch_); }
 		}
 #endif
+
+		// stable radix sort of point indices by Morton key, sequential version
+		void sort_point_order_seq()
+		{
+			const std::size_t N_points = point_order_.size();
+			const uint64_t max_key = morton_key(last_cell_[0], last_cell_[1], last_cell_[2]);
+			if (N_points < 2 || max_key == 0) { return; }
+
+			// determine how many bytes to sort
+			// (1 to 8 radix passes needed for 63-bit Morton keys)
+			uint32_t N_passes = 0;
+			for (uint64_t key = max_key; key != 0; key >>= 8)
+			{
+				N_passes++;
+			}
+
+			// prepare output buffer and byte counts
+			point_order_scratch_.resize(N_points);
+			std::array<std::size_t, 256> counts;
+			PointEntry* src = point_order_.data();
+			PointEntry* dst = point_order_scratch_.data();
+
+			// sort bytes from least to most significant
+			for (uint32_t pass = 0; pass < N_passes; pass++)
+			{
+				const uint32_t shift = pass * 8;
+
+				// count each byte value
+				counts.fill(0);
+				for (std::size_t i = 0; i < N_points; i++)
+				{
+					counts[(src[i].key >> shift) & 255]++;
+				}
+
+				// convert counts into output positions in byte order
+				std::array<std::size_t, 256>& offsets = counts;
+				std::size_t offset = 0;
+				for (std::size_t digit = 0; digit < 256; digit++)
+				{
+					const std::size_t count = counts[digit];
+					offsets[digit] = offset;
+					offset += count;
+				}
+
+				// scatter entries while preserving equal-byte order
+				for (std::size_t i = 0; i < N_points; i++)
+				{
+					const std::size_t digit = (src[i].key >> shift) & 255;
+					dst[offsets[digit]++] = src[i];
+				}
+
+				std::swap(src, dst);
+			}
+
+			// odd pass counts leave the sorted entries in scratch
+			if (src != point_order_.data()) { point_order_.swap(point_order_scratch_); }
+		}
 
 		// store each occupied cell's key and starting point offset
 		void build_cell_table()
