@@ -9,6 +9,10 @@
 #include <stdexcept>
 #include <vector>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace cellmate
 {
 	using std::uint32_t;
@@ -35,26 +39,26 @@ namespace cellmate
 		// TODO: XML documentation?
 		void rebuild(const float* x, const float* y, const float* z, std::size_t N_points, Exec exec = Exec::par)
 		{
-			// clear previous state
 			positions_ = {};
 			point_order_.clear();
 			cell_keys_.clear();
 			cell_starts_.clear();
 			cell_cache_.fill(CellCacheEntry{});
 
-			// validate input
 			if (N_points == 0) { return; }
 			if (!x || !y || !z)
 			{
 				throw std::invalid_argument("cellmate::rebuild() requires three coordinate arrays");
 			}
 
+			// select sequential or parallel version on execution mode and heuristics
 #ifdef _OPENMP
+			const int N_threads = select_thread_count(N_points, exec);
 			if (exec == Exec::par &&
+				N_threads > 1 &&
 				N_points <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
-				// TODO: add condition for the min number of points per thread to avoid OpenMP overhead?
-				rebuild_par(x, y, z, static_cast<std::ptrdiff_t>(N_points));
+				rebuild_par(x, y, z, static_cast<std::ptrdiff_t>(N_points), N_threads);
 			}
 			else
 			{
@@ -73,12 +77,9 @@ namespace cellmate
 		void find_neighbors(std::array<float, 3> query_pos, std::vector<std::size_t>& neighbors) const
 		{
 			neighbors.clear();
-
-			// validate input
+			
 			if (!positions_[0]) { return; }
-			if (!std::isfinite(query_pos[0]) ||
-				!std::isfinite(query_pos[1]) ||
-				!std::isfinite(query_pos[2]))
+			if (!std::isfinite(query_pos[0]) || !std::isfinite(query_pos[1]) || !std::isfinite(query_pos[2]))
 			{
 				throw std::invalid_argument("cellmate::find_neighbors() query position must be finite");
 			}
@@ -208,24 +209,38 @@ namespace cellmate
 			}
 
 			// sort point indices by Morton key
+			// TODO: try to find faster sorting algo, e.g. pdqsort or custom radixsort?
 			std::sort(point_order_.begin(), point_order_.end(),
 				[](const PointEntry& a, const PointEntry& b)
 				{
 					return a.key < b.key || (a.key == b.key && a.idx < b.idx);
 				});
 			
-			build_cell_table(N_points);
+			build_cell_table();
 		}
 
 #ifdef _OPENMP
-		void rebuild_par(const float* x, const float* y, const float* z, std::ptrdiff_t N_points)
+		// choose how many threads to use for parallel work, based on heuristics
+		static int select_thread_count(std::size_t N_points, Exec exec)
+		{
+			if (exec != Exec::par || omp_in_parallel()) { return 1; }
+
+			const int min_points_per_thread = 4096;
+			const int max_threads = omp_get_max_threads();
+			const int N_threads = static_cast<int>(
+				(std::min)(N_points / min_points_per_thread, static_cast<std::size_t>(max_threads)));
+
+			return (std::max)(1, N_threads);
+		}
+
+		void rebuild_par(const float* x, const float* y, const float* z, std::ptrdiff_t N_points, int N_threads)
 		{
 			// compute minimum and maximum (x,y,z)
 			// (compute local bounds per thread, then merge into grid bounds)
 			std::array<float, 3> minimum{ x[0], y[0], z[0] };
 			std::array<float, 3> maximum = minimum;
 			bool invalid = false;
-			#pragma omp parallel
+			#pragma omp parallel num_threads(N_threads)
 			{
 				std::array<float, 3> local_min{ x[0], y[0], z[0] };
 				std::array<float, 3> local_max = local_min;
@@ -271,7 +286,7 @@ namespace cellmate
 
 			// assign Morton keys and original indices to each point in parallel
 			point_order_.resize(N_points);
-			#pragma omp parallel for schedule(static)
+			#pragma omp parallel for schedule(static) num_threads(N_threads)
 			for (std::ptrdiff_t i = 0; i < N_points; i++)
 			{
 				const uint32_t cx = cell_coord(x[i], 0);
@@ -280,29 +295,42 @@ namespace cellmate
 				point_order_[i] = { morton_key(cx, cy, cz), static_cast<std::size_t>(i) };
 			}
 
-			sort_point_order_par();
-			build_cell_table(N_points);
+			sort_point_order_par(N_threads);
+
+			build_cell_table();
 		}
 
-		void sort_point_order_par()
+		// stable radix sort of point indices by Morton key
+		void sort_point_order_par(int N_threads)
 		{
 			const std::size_t N_points = point_order_.size();
 			const uint64_t max_key = morton_key(last_cell_[0], last_cell_[1], last_cell_[2]);
 			if (N_points < 2 || max_key == 0) { return; }
 
+			// determine how many bytes to sort
+			// (1 to 8 radix passes needed for 63-bit Morton keys)
 			uint32_t N_passes = 0;
-			for (uint64_t key = max_key; key != 0; key >>= 8) { N_passes++; }
+			for (uint64_t key = max_key; key != 0; key >>= 8)
+			{
+				N_passes++;
+			}
 
-			const std::size_t chunk_size = 4096;
+			// divide entries into chunks for parallel counting and scattering
+			const std::size_t chunk_size = 4096; // TODO: find better heuristic?
 			const std::ptrdiff_t N_chunks = static_cast<std::ptrdiff_t>(
 				N_points / chunk_size + (N_points % chunk_size != 0));
+			const int N_sort_threads = static_cast<int>(
+				(std::min)(static_cast<std::ptrdiff_t>(N_threads), N_chunks));
+
+			// prepare output buffer and per-chunk byte counts
 			point_order_scratch_.resize(N_points);
 			radix_offsets_.resize(N_chunks);
 			PointEntry* src = point_order_.data();
 			PointEntry* dst = point_order_scratch_.data();
 
-			#pragma omp parallel
+			#pragma omp parallel num_threads(N_sort_threads)
 			{
+				// sort bytes from least to most significant
 				for (uint32_t pass = 0; pass < N_passes; pass++)
 				{
 					const uint32_t shift = pass * 8;
@@ -321,7 +349,7 @@ namespace cellmate
 						}
 					}
 
-					// assign disjoint output ranges in byte and chunk order
+					// convert counts into output positions in byte and chunk order
 					#pragma omp single
 					{
 						std::size_t offset = 0;
@@ -363,8 +391,9 @@ namespace cellmate
 #endif
 
 		// store each occupied cell's key and starting point offset
-		void build_cell_table(std::size_t N_points)
+		void build_cell_table()
 		{
+			const std::size_t N_points = point_order_.size();
 			std::size_t begin = 0;
 			for (std::size_t end = 1; end <= N_points; end++)
 			{
@@ -408,7 +437,7 @@ namespace cellmate
 			return static_cast<uint32_t>(coordinate);
 		}
 
-		// spread 21 coordinate bits into bit positions 0, 3, 6, ..., 60 of a 64-bit key
+		// spread 21 coordinate bits into bit positions 0, 3, 6, ..., 60 of a 63-bit key
 		static uint64_t spread_bits(uint32_t value)
 		{
 			uint64_t bits = value;
@@ -422,7 +451,7 @@ namespace cellmate
 			return bits;
 		}
 
-		// interleave three 21-bit coordinates into a single 64-bit Morton key
+		// interleave three 21-bit coordinates into a single 63-bit Morton key
 		static uint64_t morton_key(uint32_t x, uint32_t y, uint32_t z)
 		{
 			// x occupies bit positions: 0, 3, 6, ..., 60
