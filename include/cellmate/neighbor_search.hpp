@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -60,9 +62,8 @@ namespace cellmate
 
 			// select sequential or parallel version on execution mode and heuristics
 #ifdef _OPENMP
-			const int N_threads = select_thread_count(N_points, exec);
-			if (exec == Exec::par &&
-				N_threads > 1 &&
+			const int N_threads = select_thread_count(N_points, exec, 4096);
+			if (exec == Exec::par && N_threads > 1 &&
 				N_points <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
 				rebuild_par(x, y, z, static_cast<std::ptrdiff_t>(N_points), N_threads);
@@ -94,11 +95,11 @@ namespace cellmate
 				context.build_id_ = build_id_;
 			}
 
-			if (!positions_[0]) { return; }
 			if (!std::isfinite(query_pos[0]) || !std::isfinite(query_pos[1]) || !std::isfinite(query_pos[2]))
 			{
 				throw std::invalid_argument("cellmate::query() query position must be finite");
 			}
+			if (!positions_[0]) { return; }
 
 			// query position relative to the grid in cell units
 			const double center_x = (double(query_pos[0]) - origin_[0]) / radius_;
@@ -157,6 +158,66 @@ namespace cellmate
 			}
 		}
 
+		// TODO: XML documentation?
+		void query_batch(const float* x, const float* y, const float* z, std::size_t N_queries,
+			std::vector<std::size_t>& neighbors, std::vector<std::size_t>& offsets, Exec exec = Exec::par) const
+		{
+			if (&neighbors == &offsets)
+			{
+				throw std::invalid_argument("cellmate::query_batch() requires distinct output vectors");
+			}
+			if (N_queries >= offsets.max_size())
+			{
+				throw std::length_error("cellmate::query_batch() query count exceeds output limits");
+			}
+			if (N_queries == 0)
+			{
+				neighbors.clear();
+				offsets.assign(1, 0);
+				return;
+			}
+			if (!x || !y || !z)
+			{
+				throw std::invalid_argument("cellmate::query_batch() requires three coordinate arrays");
+			}
+
+			// validate query positions before starting parallel work
+			// TODO: disable in release builds for performance?
+			for (std::size_t i = 0; i < N_queries; i++)
+			{
+				if (!std::isfinite(x[i]) || !std::isfinite(y[i]) || !std::isfinite(z[i]))
+				{
+					throw std::invalid_argument("cellmate::query_batch() query positions must be finite");
+				}
+			}
+
+			// prepare output ranges, including empty search results
+			offsets.resize(N_queries + 1);
+			if (!positions_[0])
+			{
+				neighbors.clear();
+				std::fill(offsets.begin(), offsets.end(), 0);
+				return;
+			}
+
+			// select sequential or parallel version on execution mode and heuristics
+#ifdef _OPENMP
+			const int N_threads = select_thread_count(N_queries, exec, 256);
+			if (exec == Exec::par && N_threads > 1 &&
+				N_queries <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
+			{
+				query_batch_par(x, y, z, static_cast<std::ptrdiff_t>(N_queries), neighbors, offsets, N_threads);
+			}
+			else
+			{
+				query_batch_seq(x, y, z, N_queries, neighbors, offsets);
+			}
+#else
+			(void)exec;
+			query_batch_seq(x, y, z, N_queries, neighbors, offsets);
+#endif
+		}
+
 	private:
 
 		// reusable cell lookup cache for one querying thread
@@ -200,6 +261,74 @@ namespace cellmate
 
 		std::shared_ptr<const QueryContext::BuildId> build_id_;
 
+		void query_batch_seq(const float* x, const float* y, const float* z, std::size_t N_queries,
+			std::vector<std::size_t>& neighbors, std::vector<std::size_t>& offsets) const
+		{
+			neighbors.clear();
+
+			// collect neighbors separately for each query
+			std::vector<std::size_t> query_neighbors;
+			for (std::size_t i = 0; i < N_queries; i++)
+			{
+				query({ x[i], y[i], z[i] }, query_neighbors);
+
+				// fill each query's output range while preserving neighbor order
+				offsets[i] = neighbors.size();
+				neighbors.insert(neighbors.end(), query_neighbors.begin(), query_neighbors.end());
+			}
+			offsets[N_queries] = neighbors.size();
+		}
+
+#ifdef _OPENMP
+		void query_batch_par(const float* x, const float* y, const float* z, std::ptrdiff_t N_queries,
+			std::vector<std::size_t>& neighbors, std::vector<std::size_t>& offsets, int N_threads) const
+		{
+			// collect neighbors separately for each query
+			std::vector<std::vector<std::size_t>> query_neighbors(N_queries);
+			std::exception_ptr error;
+			#pragma omp parallel for schedule(static) num_threads(N_threads)
+			for (std::ptrdiff_t i = 0; i < N_queries; i++)
+			{
+				try
+				{
+					query({ x[i], y[i], z[i] }, query_neighbors[i]);
+				}
+				catch (...)
+				{
+					// propagate allocation failures after parallel work finishes
+					#pragma omp critical(cellmate_query_batch_error)
+					{
+						if (!error) { error = std::current_exception(); }
+					}
+				}
+			}
+			if (error) { std::rethrow_exception(error); }
+
+			// convert counts into output positions in query order
+			std::size_t N_neighbors = 0;
+			for (std::ptrdiff_t i = 0; i < N_queries; i++)
+			{
+				const std::size_t count = query_neighbors[i].size();
+				if (count > neighbors.max_size() - N_neighbors)
+				{
+					throw std::length_error("cellmate::query_batch() neighbor count exceeds output limits");
+				}
+				offsets[i] = N_neighbors;
+				N_neighbors += count;
+			}
+			offsets[N_queries] = N_neighbors;
+			neighbors.resize(N_neighbors);
+			if (N_neighbors == 0) { return; }
+
+			// fill each query's output range while preserving neighbor order
+			#pragma omp parallel for schedule(static) num_threads(N_threads)
+			for (std::ptrdiff_t i = 0; i < N_queries; i++)
+			{
+				std::copy(query_neighbors[i].begin(), query_neighbors[i].end(), neighbors.begin() + offsets[i]);
+			}
+		}
+#endif
+
 		void rebuild_seq(const float* x, const float* y, const float* z, std::size_t N_points)
 		{
 			// compute minimum and maximum (x,y,z)
@@ -241,18 +370,20 @@ namespace cellmate
 
 #ifdef _OPENMP
 		// choose how many threads to use for parallel work, based on heuristics
-		static int select_thread_count(std::size_t N_points, Exec exec)
+		static int select_thread_count(std::size_t N_items, Exec exec, int min_items_per_thread)
 		{
+			assert(min_items_per_thread > 0);
 			if (exec != Exec::par || omp_in_parallel()) { return 1; }
 
-			const int min_points_per_thread = 4096;
 			const int max_threads = omp_get_max_threads();
 			const int N_threads = static_cast<int>(
-				(std::min)(N_points / min_points_per_thread, static_cast<std::size_t>(max_threads)));
+				(std::min)(N_items / min_items_per_thread, static_cast<std::size_t>(max_threads)));
 
 			return (std::max)(1, N_threads);
 		}
+#endif
 
+#ifdef _OPENMP
 		void rebuild_par(const float* x, const float* y, const float* z, std::ptrdiff_t N_points, int N_threads)
 		{
 			// compute minimum and maximum (x,y,z)
@@ -319,7 +450,9 @@ namespace cellmate
 
 			build_cell_table_par(N_threads);
 		}
+#endif
 
+#ifdef _OPENMP
 		// stable radix sort of point indices by Morton key, parallel version
 		void sort_point_order_par(int N_threads)
 		{
@@ -420,7 +553,9 @@ namespace cellmate
 			// odd pass counts leave the sorted entries in scratch
 			if (src != point_order_.data()) { point_order_.swap(point_order_scratch_); }
 		}
+#endif
 
+#ifdef _OPENMP
 		// fill cell table with occupied cell keys and start offsets, parallel version
 		void build_cell_table_par(int N_threads)
 		{
