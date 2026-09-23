@@ -283,19 +283,33 @@ namespace cellmate
 		void query_batch_par(const float* x, const float* y, const float* z, std::ptrdiff_t N_queries,
 			std::vector<std::size_t>& neighbors, std::vector<std::size_t>& offsets, int N_threads) const
 		{
-			// collect neighbors separately for each query
-			std::vector<std::vector<std::size_t>> query_neighbors(N_queries);
+			// divide queries into one contiguous chunk per thread
+			const std::ptrdiff_t chunk_size = N_queries / N_threads + (N_queries % N_threads != 0);
+			const std::ptrdiff_t N_chunks = N_queries / chunk_size + (N_queries % chunk_size != 0);
+			std::vector<std::vector<std::size_t>> chunk_neighbors(N_chunks);
 			std::exception_ptr error;
+
+			// collect neighbors of each chunk in a separate buffer
+			// (offsets temporarily store the neighbor count of each query)
 			#pragma omp parallel for schedule(static) num_threads(N_threads)
-			for (std::ptrdiff_t i = 0; i < N_queries; i++)
+			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 			{
+				const std::ptrdiff_t begin = chunk * chunk_size;
+				const std::ptrdiff_t end = begin + (std::min)(chunk_size, N_queries - begin);
 				try
 				{
-					query({ x[i], y[i], z[i] }, query_neighbors[i]);
+					std::vector<std::size_t>& buffer = chunk_neighbors[chunk];
+					std::vector<std::size_t> query_neighbors;
+					for (std::ptrdiff_t i = begin; i < end; i++)
+					{
+						query({ x[i], y[i], z[i] }, query_neighbors);
+						offsets[i] = query_neighbors.size();
+						buffer.insert(buffer.end(), query_neighbors.begin(), query_neighbors.end());
+					}
 				}
 				catch (...)
 				{
-					// propagate allocation failures after parallel work finishes
+					// propagate alloc failures after parallel work finishes
 					#pragma omp critical(cellmate_query_batch_error)
 					{
 						if (!error) { error = std::current_exception(); }
@@ -304,27 +318,37 @@ namespace cellmate
 			}
 			if (error) { std::rethrow_exception(error); }
 
-			// convert counts into output positions in query order
+			// convert chunk sizes into output positions in chunk order
+			std::vector<std::size_t> chunk_offsets(N_chunks);
 			std::size_t N_neighbors = 0;
-			for (std::ptrdiff_t i = 0; i < N_queries; i++)
+			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 			{
-				const std::size_t count = query_neighbors[i].size();
+				const std::size_t count = chunk_neighbors[chunk].size();
 				if (count > neighbors.max_size() - N_neighbors)
 				{
 					throw std::length_error("cellmate::query_batch() neighbor count exceeds output limits");
 				}
-				offsets[i] = N_neighbors;
+				chunk_offsets[chunk] = N_neighbors;
 				N_neighbors += count;
 			}
 			offsets[N_queries] = N_neighbors;
 			neighbors.resize(N_neighbors);
 			if (N_neighbors == 0) { return; }
 
-			// fill each query's output range while preserving neighbor order
+			// fill each chunk's output range and query offsets while preserving neighbor order
 			#pragma omp parallel for schedule(static) num_threads(N_threads)
-			for (std::ptrdiff_t i = 0; i < N_queries; i++)
+			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 			{
-				std::copy(query_neighbors[i].begin(), query_neighbors[i].end(), neighbors.begin() + offsets[i]);
+				const std::ptrdiff_t begin = chunk * chunk_size;
+				const std::ptrdiff_t end = begin + (std::min)(chunk_size, N_queries - begin);
+				std::size_t offset = chunk_offsets[chunk];
+				for (std::ptrdiff_t i = begin; i < end; i++)
+				{
+					const std::size_t count = offsets[i];
+					offsets[i] = offset;
+					offset += count;
+				}
+				std::copy(chunk_neighbors[chunk].begin(), chunk_neighbors[chunk].end(), neighbors.begin() + chunk_offsets[chunk]);
 			}
 		}
 #endif
