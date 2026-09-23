@@ -84,16 +84,7 @@ namespace cellmate
 		// TODO: XML documentation?
 		void query(std::array<float, 3> query_pos, std::vector<std::size_t>& neighbors) const
 		{
-			// reuse a separate cache on each calling thread
-			static thread_local QueryContext context;
 			neighbors.clear();
-
-			// clear cached cell indices when the context switches to a different build
-			if (context.build_id_ != build_id_)
-			{
-				context.cell_cache_.fill(QueryContext::CellCacheEntry{});
-				context.build_id_ = build_id_;
-			}
 
 			if (!std::isfinite(query_pos[0]) || !std::isfinite(query_pos[1]) || !std::isfinite(query_pos[2]))
 			{
@@ -101,61 +92,7 @@ namespace cellmate
 			}
 			if (!positions_[0]) { return; }
 
-			// query position relative to the grid in cell units
-			const double center_x = (double(query_pos[0]) - origin_[0]) / radius_;
-			const double center_y = (double(query_pos[1]) - origin_[1]) / radius_;
-			const double center_z = (double(query_pos[2]) - origin_[2]) / radius_;
-
-			// expand cell bounds to account for fp rounding
-			// (affects which canididate cells are included in the search, not the actual distance check)
-			const double margin_x = 8 * std::numeric_limits<double>::epsilon() * (std::abs(center_x) + 1);
-			const double margin_y = 8 * std::numeric_limits<double>::epsilon() * (std::abs(center_y) + 1);
-			const double margin_z = 8 * std::numeric_limits<double>::epsilon() * (std::abs(center_z) + 1);
-
-			// find candidate cell bounds, clipped to the extent of the grid
-			const double first_x = (std::max)(0.0, std::floor(center_x - 1 - margin_x));
-			const double first_y = (std::max)(0.0, std::floor(center_y - 1 - margin_y));
-			const double first_z = (std::max)(0.0, std::floor(center_z - 1 - margin_z));
-			const double last_x = (std::min)(double(last_cell_[0]), std::floor(center_x + 1 + margin_x));
-			const double last_y = (std::min)(double(last_cell_[1]), std::floor(center_y + 1 + margin_y));
-			const double last_z = (std::min)(double(last_cell_[2]), std::floor(center_z + 1 + margin_z));
-			if (first_x > last_x || first_y > last_y || first_z > last_z) { return; }
-
-			const std::array<uint32_t, 3> begin{ static_cast<uint32_t>(first_x),
-												 static_cast<uint32_t>(first_y),
-												 static_cast<uint32_t>(first_z) };
-			const std::array<uint32_t, 3> end{ static_cast<uint32_t>(last_x),
-											   static_cast<uint32_t>(last_y),
-											   static_cast<uint32_t>(last_z) };
-
-			// visit candidate cells and check contained points
-			for (uint32_t z = begin[2]; z <= end[2]; z++)
-			{
-				const uint64_t z_code = spread_bits(z) << 2;
-				for (uint32_t y = begin[1]; y <= end[1]; y++)
-				{
-					const uint64_t yz_code = z_code | (spread_bits(y) << 1);
-					for (uint32_t x = begin[0]; x <= end[0]; x++)
-					{
-						const uint64_t key = yz_code | spread_bits(x);
-						const std::size_t cell_idx = find_cell(key, context);
-						if (cell_idx == cell_keys_.size()) { continue; }
-
-						// collect original indices of points within the search radius
-						for (std::size_t i = cell_starts_[cell_idx]; i < cell_starts_[cell_idx + 1]; i++)
-						{
-							const std::size_t idx = point_order_[i].idx;
-							const double dx = double(query_pos[0]) - positions_[0][idx];
-							const double dy = double(query_pos[1]) - positions_[1][idx];
-							const double dz = double(query_pos[2]) - positions_[2][idx];
-							if (dx * dx + dy * dy + dz * dz <= radius_ * radius_)
-							{
-								neighbors.push_back(idx);
-							}
-						}
-					}
-				}
-			}
+			append_neighbors(query_pos, thread_context(), neighbors);
 		}
 
 		// TODO: XML documentation?
@@ -261,20 +198,94 @@ namespace cellmate
 
 		std::shared_ptr<const QueryContext::BuildId> build_id_;
 
+		// reusable cell lookup cache of the calling thread, synchronized with the current build
+		// (the returned reference must only be used on the calling thread)
+		QueryContext& thread_context() const
+		{
+			// reuse a separate cache on each calling thread
+			static thread_local QueryContext context;
+
+			// clear cached cell indices when the context switches to a different build
+			if (context.build_id_ != build_id_)
+			{
+				context.cell_cache_.fill(QueryContext::CellCacheEntry{});
+				context.build_id_ = build_id_;
+			}
+
+			return context;
+		}
+
+		// append neighbors of one query position without clearing the output
+		void append_neighbors(std::array<float, 3> query_pos, QueryContext& context, std::vector<std::size_t>& neighbors) const
+		{
+			// query position relative to the grid in cell units
+			const double center_x = (double(query_pos[0]) - origin_[0]) / radius_;
+			const double center_y = (double(query_pos[1]) - origin_[1]) / radius_;
+			const double center_z = (double(query_pos[2]) - origin_[2]) / radius_;
+
+			// expand cell bounds to account for fp rounding
+			// (affects which canididate cells are included in the search, not the actual distance check)
+			const double margin_x = 8 * std::numeric_limits<double>::epsilon() * (std::abs(center_x) + 1);
+			const double margin_y = 8 * std::numeric_limits<double>::epsilon() * (std::abs(center_y) + 1);
+			const double margin_z = 8 * std::numeric_limits<double>::epsilon() * (std::abs(center_z) + 1);
+
+			// find candidate cell bounds, clipped to the extent of the grid
+			const double first_x = (std::max)(0.0, std::floor(center_x - 1 - margin_x));
+			const double first_y = (std::max)(0.0, std::floor(center_y - 1 - margin_y));
+			const double first_z = (std::max)(0.0, std::floor(center_z - 1 - margin_z));
+			const double last_x = (std::min)(double(last_cell_[0]), std::floor(center_x + 1 + margin_x));
+			const double last_y = (std::min)(double(last_cell_[1]), std::floor(center_y + 1 + margin_y));
+			const double last_z = (std::min)(double(last_cell_[2]), std::floor(center_z + 1 + margin_z));
+			if (first_x > last_x || first_y > last_y || first_z > last_z) { return; }
+
+			const std::array<uint32_t, 3> begin{ static_cast<uint32_t>(first_x),
+												 static_cast<uint32_t>(first_y),
+												 static_cast<uint32_t>(first_z) };
+			const std::array<uint32_t, 3> end{ static_cast<uint32_t>(last_x),
+											   static_cast<uint32_t>(last_y),
+											   static_cast<uint32_t>(last_z) };
+
+			// visit candidate cells and check contained points
+			for (uint32_t z = begin[2]; z <= end[2]; z++)
+			{
+				const uint64_t z_code = spread_bits(z) << 2;
+				for (uint32_t y = begin[1]; y <= end[1]; y++)
+				{
+					const uint64_t yz_code = z_code | (spread_bits(y) << 1);
+					for (uint32_t x = begin[0]; x <= end[0]; x++)
+					{
+						const uint64_t key = yz_code | spread_bits(x);
+						const std::size_t cell_idx = find_cell(key, context);
+						if (cell_idx == cell_keys_.size()) { continue; }
+
+						// collect original indices of points within the search radius
+						for (std::size_t i = cell_starts_[cell_idx]; i < cell_starts_[cell_idx + 1]; i++)
+						{
+							const std::size_t idx = point_order_[i].idx;
+							const double dx = double(query_pos[0]) - positions_[0][idx];
+							const double dy = double(query_pos[1]) - positions_[1][idx];
+							const double dz = double(query_pos[2]) - positions_[2][idx];
+							if (dx * dx + dy * dy + dz * dz <= radius_ * radius_)
+							{
+								neighbors.push_back(idx);
+							}
+						}
+					}
+				}
+			}
+		}
+
 		void query_batch_seq(const float* x, const float* y, const float* z, std::size_t N_queries,
 			std::vector<std::size_t>& neighbors, std::vector<std::size_t>& offsets) const
 		{
 			neighbors.clear();
 
-			// collect neighbors separately for each query
-			std::vector<std::size_t> query_neighbors;
+			// fill each query's output range while preserving neighbor order
+			QueryContext& context = thread_context();
 			for (std::size_t i = 0; i < N_queries; i++)
 			{
-				query({ x[i], y[i], z[i] }, query_neighbors);
-
-				// fill each query's output range while preserving neighbor order
 				offsets[i] = neighbors.size();
-				neighbors.insert(neighbors.end(), query_neighbors.begin(), query_neighbors.end());
+				append_neighbors({ x[i], y[i], z[i] }, context, neighbors);
 			}
 			offsets[N_queries] = neighbors.size();
 		}
@@ -290,7 +301,7 @@ namespace cellmate
 			std::exception_ptr error;
 
 			// collect neighbors of each chunk in a separate buffer
-			// (offsets temporarily store the neighbor count of each query)
+			// (offsets temporarily store the start of each query within its chunk buffer)
 			#pragma omp parallel for schedule(static) num_threads(N_threads)
 			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 			{
@@ -298,13 +309,12 @@ namespace cellmate
 				const std::ptrdiff_t end = begin + (std::min)(chunk_size, N_queries - begin);
 				try
 				{
+					QueryContext& context = thread_context();
 					std::vector<std::size_t>& buffer = chunk_neighbors[chunk];
-					std::vector<std::size_t> query_neighbors;
 					for (std::ptrdiff_t i = begin; i < end; i++)
 					{
-						query({ x[i], y[i], z[i] }, query_neighbors);
-						offsets[i] = query_neighbors.size();
-						buffer.insert(buffer.end(), query_neighbors.begin(), query_neighbors.end());
+						offsets[i] = buffer.size();
+						append_neighbors({ x[i], y[i], z[i] }, context, buffer);
 					}
 				}
 				catch (...)
@@ -341,12 +351,9 @@ namespace cellmate
 			{
 				const std::ptrdiff_t begin = chunk * chunk_size;
 				const std::ptrdiff_t end = begin + (std::min)(chunk_size, N_queries - begin);
-				std::size_t offset = chunk_offsets[chunk];
 				for (std::ptrdiff_t i = begin; i < end; i++)
 				{
-					const std::size_t count = offsets[i];
-					offsets[i] = offset;
-					offset += count;
+					offsets[i] += chunk_offsets[chunk];
 				}
 				std::copy(chunk_neighbors[chunk].begin(), chunk_neighbors[chunk].end(), neighbors.begin() + chunk_offsets[chunk]);
 			}
