@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace cellmate_test
+namespace cellmate_helpers
 {
 	// expects finite positions and a finite positive radius
 	inline void brute_force(const float* x, const float* y, const float* z,

@@ -1,7 +1,7 @@
 #include <cellmate/neighbor_search.hpp>
 
-#include "brute_force.hpp"
-#include "point_cloud.hpp"
+#include "../helpers/brute_force.hpp"
+#include "../helpers/point_cloud.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,7 +13,7 @@ int main()
 {
 	const std::size_t N_points = 10000;
 	const float radius = 1.0f;
-	const cellmate_test::PointCloud points = cellmate_test::make_uniform_cloud(N_points, 67, -5.0f, 5.0f);
+	const cellmate_helpers::PointCloud points = cellmate_helpers::make_uniform_cloud(N_points, 67, -5.0f, 5.0f);
 
 	cellmate::NeighborSearch search(radius);
 	search.rebuild(points.x.data(), points.y.data(), points.z.data(), N_points);
@@ -25,7 +25,7 @@ int main()
 		const std::array<float, 3> query_pos{ points.x[i], points.y[i], points.z[i] };
 		search.query(query_pos, neighbors);
 
-		cellmate_test::brute_force(points.x.data(), points.y.data(), points.z.data(),
+		cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(),
 			N_points, radius, query_pos, expected);
 
 		// (output order of the neighbor search result does not matter)
@@ -52,7 +52,7 @@ int main()
 		for (float qx : queries)
 		{
 			search.query({ qx, 0.0f, 0.0f }, neighbors);
-			cellmate_test::brute_force(x, y, z, count, radius, { qx, 0.0f, 0.0f }, expected);
+			cellmate_helpers::brute_force(x, y, z, count, radius, { qx, 0.0f, 0.0f }, expected);
 
 			// (output order of the neighbor search result does not matter)
 			std::sort(neighbors.begin(), neighbors.end());

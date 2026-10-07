@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace cellmate_test
+namespace cellmate_helpers
 {
 	using std::uint32_t;
 
