@@ -10,16 +10,21 @@ namespace cellmate_bench
 {
 	void configure(benchmark::internal::Benchmark* bench)
 	{
-		bench->UseRealTime()
+		bench
+			->Arg(1000)
+			->Arg(10000)
+			->Arg(100000)
+			->UseRealTime()
 			->Unit(benchmark::kMicrosecond)
 			->MinTime(1.0)
-			->Repetitions(5);
+			->Repetitions(3);
 	}
 
 	void rebuild(benchmark::State& state)
 	{
 		// prepare input data and search object
-		const cellmate_helpers::PointCloud points = cellmate_helpers::make_uniform_cloud(10000, 67, -5.0f, 5.0f);
+		const std::size_t N_points = static_cast<std::size_t>(state.range(0));
+		const cellmate_helpers::PointCloud points = cellmate_helpers::make_uniform_cloud(N_points, 67, -5.0f, 5.0f);
 		cellmate::NeighborSearch search(1.0f);
 		search.rebuild(
 			points.x.data(),
@@ -50,7 +55,8 @@ namespace cellmate_bench
 	void query(benchmark::State& state)
 	{
 		// prepare input data and search object
-		const cellmate_helpers::PointCloud points = cellmate_helpers::make_uniform_cloud(10000, 67, -5.0f, 5.0f);
+		const std::size_t N_points = static_cast<std::size_t>(state.range(0));
+		const cellmate_helpers::PointCloud points = cellmate_helpers::make_uniform_cloud(N_points, 67, -5.0f, 5.0f);
 		cellmate::NeighborSearch search(1.0f);
 		search.rebuild(
 			points.x.data(),
@@ -80,6 +86,53 @@ namespace cellmate_bench
 	}
 
 	BENCHMARK(query)->Apply(configure);
+
+	void query_batch(benchmark::State& state)
+	{
+		// prepare input data and search object
+		const std::size_t N_points = static_cast<std::size_t>(state.range(0));
+		const cellmate_helpers::PointCloud points = cellmate_helpers::make_uniform_cloud(N_points, 67, -5.0f, 5.0f);
+		cellmate::NeighborSearch search(1.0f);
+		search.rebuild(
+			points.x.data(),
+			points.y.data(),
+			points.z.data(),
+			points.x.size(),
+			cellmate::Exec::seq
+		);
+
+		// prepare reusable output storage and query cache
+		std::vector<std::size_t> neighbors, offsets;
+		search.query_batch(
+			points.x.data(),
+			points.y.data(),
+			points.z.data(),
+			points.x.size(),
+			neighbors,
+			offsets,
+			cellmate::Exec::seq
+		);
+
+		// run benchmark loop
+		for (auto _ : state)
+		{
+			search.query_batch(
+				points.x.data(),
+				points.y.data(),
+				points.z.data(),
+				points.x.size(),
+				neighbors,
+				offsets,
+				cellmate::Exec::seq
+			);
+
+			benchmark::DoNotOptimize(neighbors);
+			benchmark::DoNotOptimize(offsets);
+			benchmark::ClobberMemory();
+		}
+	}
+
+	BENCHMARK(query_batch)->Apply(configure);
 }
 
 BENCHMARK_MAIN();
