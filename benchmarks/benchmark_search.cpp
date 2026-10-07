@@ -6,6 +6,10 @@
 #include <cstddef>
 #include <vector>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace cellmate_bench
 {
 	void configure(benchmark::internal::Benchmark* bench)
@@ -20,7 +24,16 @@ namespace cellmate_bench
 			->Repetitions(3);
 	}
 
-	void rebuild(benchmark::State& state)
+#ifdef _OPENMP
+	void prepare_parallel(const benchmark::State&)
+	{
+		// TODO: pick thread count differently?
+		omp_set_dynamic(0);
+		omp_set_num_threads(8);
+	}
+#endif
+
+	void rebuild(benchmark::State& state, cellmate::Exec exec)
 	{
 		// prepare input data and search object
 		const std::size_t N_points = static_cast<std::size_t>(state.range(0));
@@ -31,7 +44,7 @@ namespace cellmate_bench
 			points.y.data(), 
 			points.z.data(), 
 			points.x.size(), 
-			cellmate::Exec::seq
+			exec
 		);
 
 		// run benchmark loop
@@ -42,7 +55,7 @@ namespace cellmate_bench
 				points.y.data(), 
 				points.z.data(), 
 				points.x.size(), 
-				cellmate::Exec::seq
+				exec
 			);
 
 			benchmark::DoNotOptimize(search);
@@ -50,7 +63,12 @@ namespace cellmate_bench
 		}
 	}
 
-	BENCHMARK(rebuild)->Apply(configure);
+	// run sequential and parallel rebuild() benchmarks
+	BENCHMARK_CAPTURE(rebuild, seq, cellmate::Exec::seq)->Apply(configure);
+#ifdef _OPENMP
+	BENCHMARK_CAPTURE(rebuild, par, cellmate::Exec::par)
+		->Apply(configure)->Setup(prepare_parallel)->MeasureProcessCPUTime();
+#endif
 
 	void query(benchmark::State& state)
 	{
@@ -85,9 +103,10 @@ namespace cellmate_bench
 		}
 	}
 
+	// run sequential query() benchmarks
 	BENCHMARK(query)->Apply(configure);
 
-	void query_batch(benchmark::State& state)
+	void query_batch(benchmark::State& state, cellmate::Exec exec)
 	{
 		// prepare input data and search object
 		const std::size_t N_points = static_cast<std::size_t>(state.range(0));
@@ -110,7 +129,7 @@ namespace cellmate_bench
 			points.x.size(),
 			neighbors,
 			offsets,
-			cellmate::Exec::seq
+			exec
 		);
 
 		// run benchmark loop
@@ -123,7 +142,7 @@ namespace cellmate_bench
 				points.x.size(),
 				neighbors,
 				offsets,
-				cellmate::Exec::seq
+				exec
 			);
 
 			benchmark::DoNotOptimize(neighbors);
@@ -132,7 +151,12 @@ namespace cellmate_bench
 		}
 	}
 
-	BENCHMARK(query_batch)->Apply(configure);
+	// run sequential and parallel query_batch() benchmarks
+	BENCHMARK_CAPTURE(query_batch, seq, cellmate::Exec::seq)->Apply(configure);
+#ifdef _OPENMP
+	BENCHMARK_CAPTURE(query_batch, par, cellmate::Exec::par)
+		->Apply(configure)->Setup(prepare_parallel)->MeasureProcessCPUTime();
+#endif
 }
 
 BENCHMARK_MAIN();
