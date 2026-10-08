@@ -18,6 +18,9 @@
 #include <omp.h>
 #endif
 
+// match backend settings so distance checks can inline into the query loops
+CELLMATE_DETAIL_FP_BEGIN
+
 namespace cellmate
 {
 	using std::uint32_t;
@@ -862,3 +865,5 @@ namespace cellmate
 		}
 	};
 }
+
+CELLMATE_DETAIL_FP_END

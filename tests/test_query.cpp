@@ -6,9 +6,25 @@
 
 #include <algorithm>
 #include <array>
+#include <cfenv>
 #include <cstddef>
 #include <thread>
 #include <vector>
+
+#ifdef _MSC_VER
+// verifies that linking cellmate and including its headers preserve strict rounding
+// (the test target uses /fp:strict on MSVC)
+TEST(NeighborSearchQuery, PreservesConsumerRounding)
+{
+	const int original_rounding = std::fegetround();
+	ASSERT_NE(original_rounding, -1);
+	ASSERT_EQ(std::fesetround(FE_UPWARD), 0);
+	const double value = 1.0 + 1.1102230246251565404236316680908203125e-16;
+	const int restored = std::fesetround(original_rounding);
+	ASSERT_EQ(restored, 0);
+	ASSERT_GT(value, 1.0);
+}
+#endif
 
 // verifies that queries at every point match brute force
 // (output order of the neighbor search result does not matter)

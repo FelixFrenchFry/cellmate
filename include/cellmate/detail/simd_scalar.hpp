@@ -3,6 +3,10 @@
 #include <array>
 #include <cstddef>
 
+#include "fp_control.hpp"
+
+CELLMATE_DETAIL_FP_BEGIN
+
 namespace cellmate
 {
 	namespace detail
@@ -21,6 +25,7 @@ namespace cellmate
 
 			bool contains(float x, float y, float z) const noexcept
 			{
+				CELLMATE_DETAIL_FP_NO_CONTRACT
 				const double dx = double(query_pos_[0]) - x;
 				const double dy = double(query_pos_[1]) - y;
 				const double dz = double(query_pos_[2]) - z;
@@ -34,3 +39,5 @@ namespace cellmate
 		};
 	}
 }
+
+CELLMATE_DETAIL_FP_END

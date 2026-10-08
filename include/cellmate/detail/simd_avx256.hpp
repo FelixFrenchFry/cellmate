@@ -6,6 +6,8 @@
 
 #include "simd_scalar.hpp"
 
+CELLMATE_DETAIL_FP_BEGIN
+
 namespace cellmate
 {
 	namespace detail
@@ -34,6 +36,7 @@ namespace cellmate
 			// (cell starts not required to be aligned)
 			unsigned neighbor_mask(const float* px, const float* py, const float* pz) const noexcept
 			{
+				CELLMATE_DETAIL_FP_NO_CONTRACT
 				const __m256d dx = _mm256_sub_pd(x_, _mm256_cvtps_pd(_mm_loadu_ps(px)));
 				const __m256d dy = _mm256_sub_pd(y_, _mm256_cvtps_pd(_mm_loadu_ps(py)));
 				const __m256d dz = _mm256_sub_pd(z_, _mm256_cvtps_pd(_mm_loadu_ps(pz)));
@@ -45,3 +48,5 @@ namespace cellmate
 		};
 	}
 }
+
+CELLMATE_DETAIL_FP_END

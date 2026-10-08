@@ -29,3 +29,13 @@ add_executable(cellmate_tests
 )
 target_link_libraries(cellmate_tests PRIVATE cellmate::cellmate GTest::gtest_main)
 target_compile_features(cellmate_tests PRIVATE cxx_std_17)
+
+# optional CPU target flags for backend test builds
+if(CELLMATE_TEST_ARCH_FLAGS)
+	target_compile_options(cellmate_tests PRIVATE ${CELLMATE_TEST_ARCH_FLAGS})
+endif()
+
+# verify that cellmate preserves strict floating-point settings in consumers
+if(MSVC)
+	target_compile_options(cellmate_tests PRIVATE /fp:strict)
+endif()
