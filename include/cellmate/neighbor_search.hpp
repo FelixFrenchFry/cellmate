@@ -21,10 +21,18 @@ namespace cellmate
 	using std::uint32_t;
 	using std::uint64_t;
 
-	enum class Exec
+	// controls whether operations use multithreading
+	enum class ComputeMode
 	{
-		seq,
-		par
+		seq, // run serially on the calling thread
+		par  // run in parallel, if OpenMP available and useful
+	};
+
+	// controls whether input data is copied or read directly
+	enum class PointAccess
+	{
+		cpy, // copy and spatially order positions for contiguous access within cells
+		ref  // read input positions directly, requiring arrays to stay alive and unchanged
 	};
 
 	// TODO: XML documentation?
@@ -32,16 +40,21 @@ namespace cellmate
 	{
 	public:
 
-		explicit NeighborSearch(float radius) : radius_(radius)
+		explicit NeighborSearch(float radius, PointAccess point_access = PointAccess::cpy)
+			: radius_(radius), point_access_(point_access)
 		{
 			if (!std::isfinite(radius) || radius <= 0)
 			{
 				throw std::invalid_argument("cellmate::NeighborSearch() radius must be finite and positive");
 			}
+			if (point_access != PointAccess::cpy && point_access != PointAccess::ref)
+			{
+				throw std::invalid_argument("cellmate::NeighborSearch() point access must be cpy or ref");
+			}
 		}
 
 		// TODO: XML documentation?
-		void rebuild(const float* x, const float* y, const float* z, std::size_t N_points, Exec exec = Exec::par)
+		void rebuild(const float* x, const float* y, const float* z, std::size_t N_points, ComputeMode exec = ComputeMode::par)
 		{
 			positions_ = {};
 			build_id_.reset();
@@ -53,6 +66,9 @@ namespace cellmate
 				point_order_.clear();
 				cell_keys_.clear();
 				cell_starts_.clear();
+				copied_ordered_positions_[0].clear();
+				copied_ordered_positions_[1].clear();
+				copied_ordered_positions_[2].clear();
 				return;
 			}
 			if (!x || !y || !z)
@@ -63,7 +79,7 @@ namespace cellmate
 			// select sequential or parallel version on execution mode and heuristics
 #ifdef _OPENMP
 			const int N_threads = select_thread_count(N_points, exec, 4096);
-			if (exec == Exec::par && N_threads > 1 &&
+			if (exec == ComputeMode::par && N_threads > 1 &&
 				N_points <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
 				rebuild_par(x, y, z, static_cast<std::ptrdiff_t>(N_points), N_threads);
@@ -77,8 +93,9 @@ namespace cellmate
 			rebuild_seq(x, y, z, N_points);
 #endif
 
+			if (point_access_ == PointAccess::cpy) { copy_positions(x, y, z, N_points, exec); }
 			build_id_ = std::make_shared<QueryContext::BuildId>();
-			positions_ = { x, y, z };
+			if (point_access_ == PointAccess::ref) { positions_ = { x, y, z }; }
 		}
 
 		// TODO: XML documentation?
@@ -90,14 +107,14 @@ namespace cellmate
 			{
 				throw std::invalid_argument("cellmate::query() query position must be finite");
 			}
-			if (!positions_[0]) { return; }
+			if (!build_id_) { return; }
 
 			append_neighbors(query_pos, thread_context(), neighbors);
 		}
 
 		// TODO: XML documentation?
 		void query_batch(const float* x, const float* y, const float* z, std::size_t N_queries,
-			std::vector<std::size_t>& neighbors, std::vector<std::size_t>& offsets, Exec exec = Exec::par) const
+			std::vector<std::size_t>& neighbors, std::vector<std::size_t>& offsets, ComputeMode exec = ComputeMode::par) const
 		{
 			if (&neighbors == &offsets)
 			{
@@ -130,7 +147,7 @@ namespace cellmate
 
 			// prepare output ranges, including empty search results
 			offsets.resize(N_queries + 1);
-			if (!positions_[0])
+			if (!build_id_)
 			{
 				neighbors.clear();
 				std::fill(offsets.begin(), offsets.end(), 0);
@@ -140,7 +157,7 @@ namespace cellmate
 			// select sequential or parallel version on execution mode and heuristics
 #ifdef _OPENMP
 			const int N_threads = select_thread_count(N_queries, exec, 256);
-			if (exec == Exec::par && N_threads > 1 &&
+			if (exec == ComputeMode::par && N_threads > 1 &&
 				N_queries <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
 				query_batch_par(x, y, z, static_cast<std::ptrdiff_t>(N_queries), neighbors, offsets, N_threads);
@@ -181,7 +198,9 @@ namespace cellmate
 		};
 
 		double radius_;
+		PointAccess point_access_;
 		std::array<const float*, 3> positions_{};
+		std::array<std::vector<float>, 3> copied_ordered_positions_;
 		std::array<float, 3> origin_{};
 		std::array<uint32_t, 3> last_cell_{};
 		std::vector<PointEntry> point_order_;
@@ -218,6 +237,12 @@ namespace cellmate
 		// append neighbors of one query position without clearing the output
 		void append_neighbors(std::array<float, 3> query_pos, QueryContext& context, std::vector<std::size_t>& neighbors) const
 		{
+			// resolve position storage without retaining pointers into the vectors
+			const bool copied = point_access_ == PointAccess::cpy;
+			const std::array<const float*, 3> positions = copied
+				? std::array<const float*, 3>{ copied_ordered_positions_[0].data(), copied_ordered_positions_[1].data(), copied_ordered_positions_[2].data() }
+				: positions_;
+
 			// query position relative to the grid in cell units
 			const double center_x = (double(query_pos[0]) - origin_[0]) / radius_;
 			const double center_y = (double(query_pos[1]) - origin_[1]) / radius_;
@@ -261,13 +286,13 @@ namespace cellmate
 						// collect original indices of points within the search radius
 						for (std::size_t i = cell_starts_[cell_idx]; i < cell_starts_[cell_idx + 1]; i++)
 						{
-							const std::size_t idx = point_order_[i].idx;
-							const double dx = double(query_pos[0]) - positions_[0][idx];
-							const double dy = double(query_pos[1]) - positions_[1][idx];
-							const double dz = double(query_pos[2]) - positions_[2][idx];
+							const std::size_t idx = copied ? i : point_order_[i].idx;
+							const double dx = double(query_pos[0]) - positions[0][idx];
+							const double dy = double(query_pos[1]) - positions[1][idx];
+							const double dz = double(query_pos[2]) - positions[2][idx];
 							if (dx * dx + dy * dy + dz * dz <= radius_ * radius_)
 							{
-								neighbors.push_back(idx);
+								neighbors.push_back(point_order_[i].idx);
 							}
 						}
 					}
@@ -360,6 +385,40 @@ namespace cellmate
 		}
 #endif
 
+		// copy positions into cell order, while preserving the the mapping to original indices
+		void copy_positions(const float* x, const float* y, const float* z, std::size_t N_points, ComputeMode exec)
+		{
+			copied_ordered_positions_[0].resize(N_points);
+			copied_ordered_positions_[1].resize(N_points);
+			copied_ordered_positions_[2].resize(N_points);
+
+#ifdef _OPENMP
+			const int N_threads = select_thread_count(N_points, exec, 4096);
+			if (N_threads > 1 && N_points <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
+			{
+				#pragma omp parallel for schedule(static) num_threads(N_threads)
+				for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_points); i++)
+				{
+					const std::size_t idx = point_order_[i].idx;
+					copied_ordered_positions_[0][i] = x[idx];
+					copied_ordered_positions_[1][i] = y[idx];
+					copied_ordered_positions_[2][i] = z[idx];
+				}
+				return;
+			}
+#else
+			(void)exec;
+#endif
+
+			for (std::size_t i = 0; i < N_points; i++)
+			{
+				const std::size_t idx = point_order_[i].idx;
+				copied_ordered_positions_[0][i] = x[idx];
+				copied_ordered_positions_[1][i] = y[idx];
+				copied_ordered_positions_[2][i] = z[idx];
+			}
+		}
+
 		void rebuild_seq(const float* x, const float* y, const float* z, std::size_t N_points)
 		{
 			// compute minimum and maximum (x,y,z)
@@ -400,10 +459,10 @@ namespace cellmate
 
 #ifdef _OPENMP
 		// choose how many threads to use for parallel work, based on heuristics
-		static int select_thread_count(std::size_t N_items, Exec exec, int min_items_per_thread)
+		static int select_thread_count(std::size_t N_items, ComputeMode exec, int min_items_per_thread)
 		{
 			assert(min_items_per_thread > 0);
-			if (exec != Exec::par || omp_in_parallel()) { return 1; }
+			if (exec != ComputeMode::par || omp_in_parallel()) { return 1; }
 
 			const int max_threads = omp_get_max_threads();
 			const int N_threads = static_cast<int>(
@@ -742,17 +801,17 @@ namespace cellmate
 			return entry.idx;
 		}
 
-		// convert a position to a cell coordinate relative to the grid origin
-		uint32_t cell_coord(float p, std::size_t axis) const
+		// convert one position coordinate to a cell coordinate relative to the grid origin
+		uint32_t cell_coord(float coordinate, std::size_t axis) const
 		{
-			const double coordinate = std::floor((double(p) - origin_[axis]) / radius_);
+			const double cell_coordinate = std::floor((double(coordinate) - origin_[axis]) / radius_);
 
-			if (coordinate >= (1u << 21)) // TODO: disable in release builds?
+			if (cell_coordinate >= (1u << 21)) // TODO: disable in release builds?
 			{
 				throw std::out_of_range("cellmate::rebuild() extent exceeds 21-bit cell coordinates");
 			}
 
-			return static_cast<uint32_t>(coordinate);
+			return static_cast<uint32_t>(cell_coordinate);
 		}
 
 		// spread 21 coordinate bits into bit positions 0, 3, 6, ..., 60 of a 63-bit key

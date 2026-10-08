@@ -24,6 +24,5 @@ endif()
 
 option(CELLMATE_BUILD_TESTS "Build the cellmate correctness tests" OFF)
 if(CELLMATE_BUILD_TESTS)
-	enable_testing()
 	add_subdirectory(tests)
 endif()

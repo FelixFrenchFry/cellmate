@@ -23,7 +23,7 @@ namespace cellmate_bench
 	}
 #endif
 
-	void rebuild(benchmark::State& state, cellmate::Exec exec)
+	void rebuild(benchmark::State& state, cellmate::ComputeMode exec)
 	{
 		// prepare input data and search object
 		const cellmate_helpers::PointCloud points = make_points(state);
@@ -52,14 +52,14 @@ namespace cellmate_bench
 		}
 
 #ifdef _OPENMP
-		if (exec == cellmate::Exec::par) { state.counters["max_threads"] = max_threads; }
+		if (exec == cellmate::ComputeMode::par) { state.counters["max_threads"] = max_threads; }
 #endif
 	}
 
 	// run sequential and parallel rebuild() benchmarks
-	BENCHMARK_CAPTURE(rebuild, seq, cellmate::Exec::seq)->Apply(configure);
+	BENCHMARK_CAPTURE(rebuild, seq, cellmate::ComputeMode::seq)->Apply(configure);
 #ifdef _OPENMP
-	BENCHMARK_CAPTURE(rebuild, par, cellmate::Exec::par)
+	BENCHMARK_CAPTURE(rebuild, par, cellmate::ComputeMode::par)
 		->Apply(configure)->Setup(prepare_parallel)->MeasureProcessCPUTime();
 #endif
 
@@ -73,7 +73,7 @@ namespace cellmate_bench
 			points.y.data(),
 			points.z.data(),
 			points.x.size(),
-			cellmate::Exec::seq
+			cellmate::ComputeMode::seq
 		);
 
 		// prepare reusable output storage and query cache
@@ -98,7 +98,7 @@ namespace cellmate_bench
 	// run sequential query() benchmarks
 	BENCHMARK(query)->Name("query/cellmate/seq")->Apply(configure);
 
-	void query_batch(benchmark::State& state, cellmate::Exec exec)
+	void query_batch(benchmark::State& state, cellmate::ComputeMode exec)
 	{
 		// prepare input data and search object
 		const cellmate_helpers::PointCloud points = make_points(state);
@@ -108,7 +108,7 @@ namespace cellmate_bench
 			points.y.data(),
 			points.z.data(),
 			points.x.size(),
-			cellmate::Exec::seq
+			cellmate::ComputeMode::seq
 		);
 
 		// prepare reusable output storage and query cache
@@ -142,16 +142,14 @@ namespace cellmate_bench
 		}
 
 #ifdef _OPENMP
-		if (exec == cellmate::Exec::par) { state.counters["max_threads"] = max_threads; }
+		if (exec == cellmate::ComputeMode::par) { state.counters["max_threads"] = max_threads; }
 #endif
 	}
 
 	// run sequential and parallel query_batch() benchmarks
-	BENCHMARK_CAPTURE(query_batch, seq, cellmate::Exec::seq)->Apply(configure);
+	BENCHMARK_CAPTURE(query_batch, seq, cellmate::ComputeMode::seq)->Apply(configure);
 #ifdef _OPENMP
-	BENCHMARK_CAPTURE(query_batch, par, cellmate::Exec::par)
+	BENCHMARK_CAPTURE(query_batch, par, cellmate::ComputeMode::par)
 		->Apply(configure)->Setup(prepare_parallel)->MeasureProcessCPUTime();
 #endif
 }
-
-BENCHMARK_MAIN();

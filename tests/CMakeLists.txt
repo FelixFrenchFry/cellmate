@@ -21,7 +21,11 @@ FetchContent_Declare(googletest
 FetchContent_MakeAvailable(googletest)
 
 # build the correctness tests
-add_executable(cellmate_tests test_search.cpp)
-target_sources(cellmate_tests PRIVATE test_point_storage.cpp)
+add_executable(cellmate_tests
+	test_rebuild.cpp
+	test_query.cpp
+	test_query_batch.cpp
+	test_point_storage.cpp
+)
 target_link_libraries(cellmate_tests PRIVATE cellmate::cellmate GTest::gtest_main)
 target_compile_features(cellmate_tests PRIVATE cxx_std_17)
