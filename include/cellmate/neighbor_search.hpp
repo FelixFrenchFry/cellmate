@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "detail/simd.hpp"
+
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -270,6 +272,8 @@ namespace cellmate
 											   static_cast<uint32_t>(last_y),
 											   static_cast<uint32_t>(last_z) };
 
+			const detail::DistQuery dist_query(query_pos, radius_ * radius_);
+
 			// visit candidate cells and check contained points
 			for (uint32_t z = begin[2]; z <= end[2]; z++)
 			{
@@ -283,19 +287,39 @@ namespace cellmate
 						const std::size_t cell_idx = find_cell(key, context);
 						if (cell_idx == cell_keys_.size()) { continue; }
 
-						// collect original indices of points within the search radius
-						for (std::size_t i = cell_starts_[cell_idx]; i < cell_starts_[cell_idx + 1]; i++)
-						{
-							const std::size_t idx = copied ? i : point_order_[i].idx;
-							const double dx = double(query_pos[0]) - positions[0][idx];
-							const double dy = double(query_pos[1]) - positions[1][idx];
-							const double dz = double(query_pos[2]) - positions[2][idx];
-							if (dx * dx + dy * dy + dz * dz <= radius_ * radius_)
-							{
-								neighbors.push_back(point_order_[i].idx);
-							}
-						}
+						append_cell_neighbors(cell_idx, positions, copied, dist_query, neighbors);
 					}
+				}
+			}
+		}
+
+		// collect original indices of points within the search radius
+		// (filtering one cell, preserving output order of the original indices)
+		void append_cell_neighbors(std::size_t cell_idx, const std::array<const float*, 3>& positions,
+			bool copied, const detail::DistQuery& dist_query, std::vector<std::size_t>& neighbors) const
+		{
+			std::size_t i = cell_starts_[cell_idx];
+			const std::size_t cell_end = cell_starts_[cell_idx + 1];
+			if (copied) // optional SIMD mask distance checks for contiguous positions
+			{
+				for (; cell_end - i >= detail::DistQuery::N_lanes; i += detail::DistQuery::N_lanes)
+				{
+					const unsigned mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i);
+					for (std::size_t lane = 0; lane < detail::DistQuery::N_lanes; lane++)
+					{
+						if (mask & (1u << lane)) { neighbors.push_back(point_order_[i + lane].idx); }
+					}
+				}
+			}
+
+			// scalar distance checks for non-contiguous positions
+			// (or for the remainder after the SIMD check loop, if available)
+			for (; i < cell_end; i++)
+			{
+				const std::size_t idx = copied ? i : point_order_[i].idx;
+				if (dist_query.contains(positions[0][idx], positions[1][idx], positions[2][idx]))
+				{
+					neighbors.push_back(point_order_[i].idx);
 				}
 			}
 		}
