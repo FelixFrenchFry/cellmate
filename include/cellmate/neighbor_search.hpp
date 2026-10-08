@@ -395,7 +395,6 @@ namespace cellmate
 			}
 
 			sort_point_order_seq();
-			
 			build_cell_table_seq();
 		}
 
@@ -478,7 +477,6 @@ namespace cellmate
 			}
 
 			sort_point_order_par(N_threads);
-
 			build_cell_table_par(N_threads);
 		}
 #endif

@@ -1,7 +1,7 @@
 #include <cellmate/neighbor_search.hpp>
 #include <benchmark/benchmark.h>
 
-#include "../helpers/point_cloud.hpp"
+#include "bench_config.hpp"
 
 #include <cstddef>
 #include <vector>
@@ -12,33 +12,22 @@
 
 namespace cellmate_bench
 {
-	void configure(benchmark::internal::Benchmark* bench)
-	{
-		bench
-			->Arg(1000)
-			->Arg(10000)
-			->Arg(100000)
-			->UseRealTime()
-			->Unit(benchmark::kMicrosecond)
-			->MinTime(1.0)
-			->Repetitions(3);
-	}
-
 #ifdef _OPENMP
+	const int max_threads = omp_get_max_threads();
+
 	void prepare_parallel(const benchmark::State&)
 	{
-		// TODO: pick thread count differently?
+		// restore the configured thread limit after serial benchmarks
 		omp_set_dynamic(0);
-		omp_set_num_threads(8);
+		omp_set_num_threads(max_threads);
 	}
 #endif
 
 	void rebuild(benchmark::State& state, cellmate::Exec exec)
 	{
 		// prepare input data and search object
-		const std::size_t N_points = static_cast<std::size_t>(state.range(0));
-		const cellmate_helpers::PointCloud points = cellmate_helpers::make_uniform_cloud(N_points, 67, -5.0f, 5.0f);
-		cellmate::NeighborSearch search(1.0f);
+		const cellmate_helpers::PointCloud points = make_points(state);
+		cellmate::NeighborSearch search(search_radius);
 		search.rebuild(
 			points.x.data(),
 			points.y.data(), 
@@ -61,6 +50,10 @@ namespace cellmate_bench
 			benchmark::DoNotOptimize(search);
 			benchmark::ClobberMemory();
 		}
+
+#ifdef _OPENMP
+		if (exec == cellmate::Exec::par) { state.counters["max_threads"] = max_threads; }
+#endif
 	}
 
 	// run sequential and parallel rebuild() benchmarks
@@ -73,9 +66,8 @@ namespace cellmate_bench
 	void query(benchmark::State& state)
 	{
 		// prepare input data and search object
-		const std::size_t N_points = static_cast<std::size_t>(state.range(0));
-		const cellmate_helpers::PointCloud points = cellmate_helpers::make_uniform_cloud(N_points, 67, -5.0f, 5.0f);
-		cellmate::NeighborSearch search(1.0f);
+		const cellmate_helpers::PointCloud points = make_points(state);
+		cellmate::NeighborSearch search(search_radius);
 		search.rebuild(
 			points.x.data(),
 			points.y.data(),
@@ -104,14 +96,13 @@ namespace cellmate_bench
 	}
 
 	// run sequential query() benchmarks
-	BENCHMARK(query)->Apply(configure);
+	BENCHMARK(query)->Name("query/cellmate/seq")->Apply(configure);
 
 	void query_batch(benchmark::State& state, cellmate::Exec exec)
 	{
 		// prepare input data and search object
-		const std::size_t N_points = static_cast<std::size_t>(state.range(0));
-		const cellmate_helpers::PointCloud points = cellmate_helpers::make_uniform_cloud(N_points, 67, -5.0f, 5.0f);
-		cellmate::NeighborSearch search(1.0f);
+		const cellmate_helpers::PointCloud points = make_points(state);
+		cellmate::NeighborSearch search(search_radius);
 		search.rebuild(
 			points.x.data(),
 			points.y.data(),
@@ -149,6 +140,10 @@ namespace cellmate_bench
 			benchmark::DoNotOptimize(offsets);
 			benchmark::ClobberMemory();
 		}
+
+#ifdef _OPENMP
+		if (exec == cellmate::Exec::par) { state.counters["max_threads"] = max_threads; }
+#endif
 	}
 
 	// run sequential and parallel query_batch() benchmarks
