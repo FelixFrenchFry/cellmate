@@ -63,6 +63,8 @@ namespace cellmate
 		{
 			positions_ = {};
 			build_id_.reset();
+			cell_prefix_.clear();
+			cell_prefix_shift_ = 64;
 
 			// point order and cell table keep their storage, so resize() does not zero-fill them
 			// (each rebuild path must overwrite all entries after resize() or clear before appending)
@@ -255,9 +257,9 @@ namespace cellmate
 		// per-chunk cell counts, then write offsets for parallel cell-table construction
 		std::vector<std::size_t> cell_chunk_offsets_;
 
-		// cell prefix directory with the start index of each of 512 key ranges, plus sentinel
+		// cell prefix directory with the start index of each key range, plus sentinel
 		// (restricts find_cell() searches to cell keys with the same prefix bits)
-		std::array<std::size_t, 513> cell_prefix_{};
+		std::vector<std::size_t> cell_prefix_; // retains capacity across rebuilds
 		// key shift to directory range, 64 flags directory as unused
 		uint32_t cell_prefix_shift_ = 64;
 
@@ -988,23 +990,37 @@ namespace cellmate
 
 		void build_cell_prefix_directory()
 		{
-			cell_prefix_shift_ = 64;
-			if (cell_keys_.size() < 2048) { return; }
+			const std::size_t N_cells = cell_keys_.size();
+			if (N_cells < 2048) { return; }
+
+			// choose directory size based on occupied cell count heuristics
+			constexpr std::size_t N_prefixes_min = 512;
+			constexpr std::size_t N_prefixes_max = 8192;
+			constexpr std::size_t N_prefix_growth = 2;
+			constexpr std::size_t N_cells_per_prefix = 128;
+
+			const std::size_t N_prefixes_target = N_cells / N_cells_per_prefix + (N_cells % N_cells_per_prefix != 0);
+			std::size_t N_prefixes = N_prefixes_min;
+			while (N_prefixes < N_prefixes_max && N_prefixes < N_prefixes_target)
+			{
+				N_prefixes = (std::min)(N_prefixes * N_prefix_growth, N_prefixes_max);
+			}
+			cell_prefix_.resize(N_prefixes + 1);
 
 			uint32_t shift = 0;
-			for (uint64_t remaining = cell_keys_.back() >> 9; remaining != 0; remaining >>= 1)
+			for (uint64_t remaining = cell_keys_.back() / N_prefixes; remaining != 0; remaining >>= 1)
 			{
 				shift++;
 			}
 
 			auto first = cell_keys_.begin();
-			for (std::size_t prefix = 0; prefix < 512; prefix++)
+			for (std::size_t prefix = 0; prefix < N_prefixes; prefix++)
 			{
 				const uint64_t threshold = static_cast<uint64_t>(prefix) << shift;
 				first = std::lower_bound(first, cell_keys_.end(), threshold);
 				cell_prefix_[prefix] = static_cast<std::size_t>(first - cell_keys_.begin());
 			}
-			cell_prefix_[512] = cell_keys_.size();
+			cell_prefix_[N_prefixes] = cell_keys_.size();
 			cell_prefix_shift_ = shift;
 		}
 
@@ -1023,7 +1039,7 @@ namespace cellmate
 			if (cell_prefix_shift_ < 64)
 			{
 				const uint64_t prefix = key >> cell_prefix_shift_;
-				if (prefix >= 512)
+				if (prefix >= cell_prefix_.size() - 1)
 				{
 					entry.key = key;
 					entry.idx = cell_keys_.size();
