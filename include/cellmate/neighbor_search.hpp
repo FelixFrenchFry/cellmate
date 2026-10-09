@@ -924,11 +924,23 @@ namespace cellmate
 			QueryContext::CellCacheEntry& entry = context.cell_cache_[slot];
 			if (entry.key == key) { return entry.idx; }
 
-			const std::vector<uint64_t>::const_iterator cell = std::lower_bound(cell_keys_.begin(), cell_keys_.end(), key);
+			// shrink the range independently of the key comparison
+			// (allows conditional moves instead of unpredictable branches)
+			const uint64_t* first = cell_keys_.data();
+			const uint64_t* cell = first;
+			std::size_t count = cell_keys_.size();
+			assert(count != 0);
+			while (count > 1)
+			{
+				const std::size_t half = count / 2;
+				cell = cell[half] < key ? cell + half : cell;
+				count -= half;
+			}
+			cell += *cell < key;
 			entry.key = key;
-			entry.idx = cell == cell_keys_.end() || *cell != key
+			entry.idx = cell == first + cell_keys_.size() || *cell != key
 				? cell_keys_.size()
-				: static_cast<std::size_t>(cell - cell_keys_.begin());
+				: static_cast<std::size_t>(cell - first);
 			
 			return entry.idx;
 		}
