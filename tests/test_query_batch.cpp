@@ -154,6 +154,51 @@ TEST(NeighborSearchQueryBatch, BothModesPreserveInputsAndMatchBruteForce)
 	}
 }
 
+// verifies cell traversal order across contiguous ranges and SIMD boundaries
+// (uses reversed input order, empty rows, and exact cell and radius boundaries)
+TEST(NeighborSearchQueryBatch, RangesPreserveTraversalOrder)
+{
+	cellmate_helpers::PointCloud points{ { 0.0f }, { 0.0f }, { 0.0f } };
+	for (std::size_t i = 64; i != 0; i--)
+	{
+		const std::size_t cell = i - 1;
+		points.x.push_back(float(cell % 4) + 0.5f);
+		points.y.push_back(float((cell / 4) % 4) + 0.5f);
+		points.z.push_back(float(cell / 16) + 0.5f);
+	}
+	const float query_pos[]{ 1.5f, 2.0f, -100.0f };
+	const std::vector<std::size_t> expected[]{
+		{ 59, 47, 44, 43, 42, 39, 27 }, { 43, 42, 39, 38, 27, 26, 23, 22 }, {}
+	};
+	std::vector<float> query_x(513), query_y(513), query_z(513);
+	for (std::size_t i = 0; i < query_x.size(); i++)
+	{
+		query_x[i] = query_y[i] = query_z[i] = query_pos[i % 3];
+	}
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+		{
+			SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage)
+				<< ", execution = " << static_cast<int>(execution));
+			cellmate::NeighborSearch search(1.0f, storage);
+			search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), execution);
+			std::vector<std::size_t> neighbors, offsets, single;
+			search.query_batch(query_x.data(), query_y.data(), query_z.data(), query_x.size(), neighbors, offsets, execution);
+			ASSERT_EQ(offsets.size(), query_x.size() + 1);
+			ASSERT_EQ(offsets.front(), 0);
+			ASSERT_EQ(offsets.back(), neighbors.size());
+			for (std::size_t i = 0; i < query_x.size(); i++)
+			{
+				ASSERT_EQ(offsets[i + 1] - offsets[i], expected[i % 3].size());
+				ASSERT_TRUE(std::equal(expected[i % 3].begin(), expected[i % 3].end(), neighbors.begin() + offsets[i]));
+				search.query({ query_x[i], query_y[i], query_z[i] }, single);
+				ASSERT_EQ(single, expected[i % 3]);
+			}
+		}
+	}
+}
+
 // verifies original row order across all Morton key bytes and out-of-grid queries
 // (covers repeated keys, empty rows, uneven chunks, and both storage and execution modes)
 TEST(NeighborSearchQueryBatch, PreservesRowsAcrossWideExtents)

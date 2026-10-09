@@ -40,6 +40,33 @@ TEST(NeighborSearchRebuild, RebuildMatchesBruteForce)
 	}
 }
 
+// verifies range invalidation when searches and rebuilds share query bounds
+TEST(NeighborSearchRebuild, RepeatedBoundsFollowSearchBuilds)
+{
+	const float first_x[]{ 0.0f, 1.25f, 4.0f };
+	const float second_x[]{ 0.0f, 0.25f, 1.25f, 1.5f, 1.75f, 4.0f };
+	const float y[6]{}, z[6]{};
+	const std::size_t point_counts[]{ 3, 6, 3, 0, 6 };
+	const std::vector<std::size_t> expected[]{ { 1 }, { 2, 3, 4 }, { 1 }, {}, { 2, 3, 4 } };
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage));
+		cellmate::NeighborSearch first(1.0f, storage), second(1.0f, storage);
+		second.rebuild(second_x, y, z, 6, cellmate::ComputeMode::seq);
+		std::vector<std::size_t> neighbors;
+		for (std::size_t i = 0; i < 5; i++)
+		{
+			first.rebuild(point_counts[i] == 3 ? first_x : second_x, y, z, point_counts[i], cellmate::ComputeMode::seq);
+			first.query({ 1.5f, 0.0f, 0.0f }, neighbors);
+			ASSERT_EQ(neighbors, expected[i]);
+			second.query({ 1.5f, 0.0f, 0.0f }, neighbors);
+			ASSERT_EQ(neighbors, (std::vector<std::size_t>{ 2, 3, 4 }));
+			first.query({ 1.5f, 0.0f, 0.0f }, neighbors);
+			ASSERT_EQ(neighbors, expected[i]);
+		}
+	}
+}
+
 // verifies sparse cell lookups across large, small, and empty rebuilds
 // (covers empty regions, both storage modes, and sequential and parallel batches)
 TEST(NeighborSearchRebuild, SparseCellsMatchAcrossRebuilds)
