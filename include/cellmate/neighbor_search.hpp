@@ -98,6 +98,8 @@ namespace cellmate
 			rebuild_seq(x, y, z, N_points);
 #endif
 
+			build_cell_prefix_directory();
+
 			if (point_access_ == PointAccess::cpy) { copy_positions(x, y, z, N_points, exec); }
 			build_id_ = std::make_shared<QueryContext::BuildId>();
 			if (point_access_ == PointAccess::ref) { positions_ = { x, y, z }; }
@@ -235,6 +237,12 @@ namespace cellmate
 		std::vector<std::array<std::size_t, 256>> radix_offsets_;
 		// per-chunk cell counts, then write offsets for parallel cell-table construction
 		std::vector<std::size_t> cell_chunk_offsets_;
+
+		// cell prefix directory with the start index of each of 512 key ranges, plus sentinel
+		// (restricts find_cell() searches to cell keys with the same prefix bits)
+		std::array<std::size_t, 513> cell_prefix_{};
+		// key shift to directory range, 64 flags directory as unused
+		uint32_t cell_prefix_shift_ = 64;
 
 		std::shared_ptr<const QueryContext::BuildId> build_id_;
 
@@ -917,6 +925,28 @@ namespace cellmate
 			cell_starts_.push_back(N_points); // end of the last cell
 		}
 
+		void build_cell_prefix_directory()
+		{
+			cell_prefix_shift_ = 64;
+			if (cell_keys_.size() < 2048) { return; }
+
+			uint32_t shift = 0;
+			for (uint64_t remaining = cell_keys_.back() >> 9; remaining != 0; remaining >>= 1)
+			{
+				shift++;
+			}
+
+			auto first = cell_keys_.begin();
+			for (std::size_t prefix = 0; prefix < 512; prefix++)
+			{
+				const uint64_t threshold = static_cast<uint64_t>(prefix) << shift;
+				first = std::lower_bound(first, cell_keys_.end(), threshold);
+				cell_prefix_[prefix] = static_cast<std::size_t>(first - cell_keys_.begin());
+			}
+			cell_prefix_[512] = cell_keys_.size();
+			cell_prefix_shift_ = shift;
+		}
+
 		// reuse the cached result if its key matches, otherwise search and replace it
 		std::size_t find_cell(uint64_t key, QueryContext& context) const
 		{
@@ -924,21 +954,40 @@ namespace cellmate
 			QueryContext::CellCacheEntry& entry = context.cell_cache_[slot];
 			if (entry.key == key) { return entry.idx; }
 
-			// shrink the range independently of the key comparison
-			// (allows conditional moves instead of unpredictable branches)
 			const uint64_t* first = cell_keys_.data();
 			const uint64_t* cell = first;
-			std::size_t count = cell_keys_.size();
-			assert(count != 0);
-			while (count > 1)
+			const uint64_t* last = first + cell_keys_.size();
+
+			// restrict the search to the selected prefix bucket
+			if (cell_prefix_shift_ < 64)
 			{
-				const std::size_t half = count / 2;
-				cell = cell[half] < key ? cell + half : cell;
-				count -= half;
+				const uint64_t prefix = key >> cell_prefix_shift_;
+				if (prefix >= 512)
+				{
+					entry.key = key;
+					entry.idx = cell_keys_.size();
+					return entry.idx;
+				}
+
+				cell += cell_prefix_[static_cast<std::size_t>(prefix)];
+				last = first + cell_prefix_[static_cast<std::size_t>(prefix) + 1];
 			}
-			cell += *cell < key;
+
+			// shrink the range independently of the key comparison
+			// (allows conditional moves instead of unpredictable branches)
+			std::size_t count = static_cast<std::size_t>(last - cell);
+			if (count != 0)
+			{
+				while (count > 1)
+				{
+					const std::size_t half = count / 2;
+					cell = cell[half] < key ? cell + half : cell;
+					count -= half;
+				}
+				cell += *cell < key;
+			}
 			entry.key = key;
-			entry.idx = cell == first + cell_keys_.size() || *cell != key
+			entry.idx = cell == last || *cell != key
 				? cell_keys_.size()
 				: static_cast<std::size_t>(cell - first);
 			
