@@ -67,21 +67,21 @@ TEST(NeighborSearchQuery, ConcurrentQueriesMatchBruteForce)
 		cellmate::NeighborSearch search(1.0f, storage);
 		search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size());
 		std::array<bool, 2> valid{ true, true };
-		std::array<std::thread, 2> workers;
-		for (std::size_t worker = 0; worker < workers.size(); worker++)
+		std::array<std::thread, 2> threads;
+		for (std::size_t thread = 0; thread < threads.size(); thread++)
 		{
-			workers[worker] = std::thread([&, worker]()
+			threads[thread] = std::thread([&, thread]()
 			{
 				std::vector<std::size_t> neighbors;
 				for (std::size_t i = 0; i < expected.size(); i++)
 				{
 					search.query({ points.x[i], points.y[i], points.z[i] }, neighbors);
 					std::sort(neighbors.begin(), neighbors.end());
-					if (neighbors != expected[i]) { valid[worker] = false; }
+					if (neighbors != expected[i]) { valid[thread] = false; }
 				}
 			});
 		}
-		for (auto& worker : workers) { worker.join(); }
+		for (auto& thread : threads) { thread.join(); }
 		for (bool result : valid) { ASSERT_TRUE(result); }
 	}
 }

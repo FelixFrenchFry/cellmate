@@ -5,6 +5,7 @@
 #include "../helpers/point_cloud.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
@@ -35,6 +36,60 @@ TEST(NeighborSearchRebuild, RebuildMatchesBruteForce)
 
 			std::sort(neighbors.begin(), neighbors.end());
 			ASSERT_EQ(neighbors, expected) << "rebuild pass = " << pass << ", query x = " << qx;
+		}
+	}
+}
+
+// verifies sparse cell lookups across large, small, and empty rebuilds
+// (covers empty regions, both storage modes, and sequential and parallel batches)
+TEST(NeighborSearchRebuild, SparseCellsMatchAcrossRebuilds)
+{
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+		{
+			cellmate::NeighborSearch search(1.0f, storage);
+			cellmate_helpers::PointCloud points;
+			std::vector<std::size_t> neighbors, offsets, expected;
+			for (std::size_t N_points : { 2047u, 2048u, 2049u, 8193u, 1000u, 1u, 0u, 2048u })
+			{
+				SCOPED_TRACE(::testing::Message() << "point count = " << N_points
+					<< ", storage = " << static_cast<int>(storage) << ", execution = " << static_cast<int>(execution));
+				// alternate spacing so smaller rebuilds move cell keys to different indices
+				const float spacing = N_points % 2 != 0 ? 3.0f : 6.0f;
+				points.x.resize(N_points);
+				points.y.assign(N_points, 0.0f);
+				points.z.assign(N_points, 0.0f);
+				for (std::size_t i = 0; i < N_points; i++) { points.x[i] = spacing * float(i); }
+				const float extent = spacing * float(N_points);
+				if (N_points != 0) { points.y.back() = points.z.back() = extent; }
+				search.rebuild(points.x.data(), points.y.data(), points.z.data(), N_points, execution);
+
+				const std::array<float, 3> positions[]{
+					{ 0.0f, 0.0f, 0.0f }, { extent / 2, 0.0f, 0.0f }, { 1.5f, 0.0f, 0.0f },
+					{ extent / 2, extent / 2, 0.0f }, { extent - spacing, extent, extent }
+				};
+				for (const auto& position : positions)
+				{
+					search.query(position, neighbors);
+					cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(),
+						N_points, 1.0f, position, expected);
+					std::sort(neighbors.begin(), neighbors.end());
+					ASSERT_EQ(neighbors, expected);
+				}
+
+				// separated points have exactly one neighbor in each query row
+				search.query_batch(points.x.data(), points.y.data(), points.z.data(), N_points,
+					neighbors, offsets, execution);
+				ASSERT_EQ(neighbors.size(), N_points);
+				ASSERT_EQ(offsets.size(), N_points + 1);
+				for (std::size_t i = 0; i < N_points; i++)
+				{
+					ASSERT_EQ(offsets[i], i);
+					ASSERT_EQ(neighbors[i], i);
+				}
+				ASSERT_EQ(offsets.back(), N_points);
+			}
 		}
 	}
 }
