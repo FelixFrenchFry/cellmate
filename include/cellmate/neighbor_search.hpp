@@ -187,7 +187,14 @@ namespace cellmate
 
 	private:
 
-		// reusable cell lookup cache for one querying thread
+		// cell coordinates of all candidate cells considered by one query
+		struct CellBounds
+		{
+			std::array<uint32_t, 3> first;
+			std::array<uint32_t, 3> last;
+		};
+
+		// reusable cell lookup cache and point ranges for one querying thread
 		struct QueryContext
 		{
 			struct CellCacheEntry
@@ -197,10 +204,20 @@ namespace cellmate
 				std::size_t idx = 0;
 			};
 
+			// contiguous point order entries of >=1 occupied cells, excluding the end
+			struct PointRange
+			{
+				std::size_t begin;
+				std::size_t end;
+			};
+
 			// track build identity to prevent stale cache reuse
 			struct BuildId {};
 			std::shared_ptr<const BuildId> build_id_;
 			std::array<CellCacheEntry, 512> cell_cache_{};
+			CellBounds cell_bounds_{};
+			std::vector<PointRange> point_ranges_;
+			bool point_ranges_valid_ = false;
 		};
 
 		// TODO: go without struct?
@@ -246,17 +263,19 @@ namespace cellmate
 
 		std::shared_ptr<const QueryContext::BuildId> build_id_;
 
-		// reusable cell lookup cache of the calling thread, synchronized with the current build
+		// reusable query context of the calling thread, synchronized with the current build
 		// (the returned reference must only be used on the calling thread)
 		QueryContext& thread_context() const
 		{
 			// reuse a separate cache on each calling thread
 			static thread_local QueryContext context;
 
-			// clear cached cell indices when the context switches to a different build
+			// clear cached lookups and ranges when the context switches to a different build
 			if (context.build_id_ != build_id_)
 			{
 				context.cell_cache_.fill(QueryContext::CellCacheEntry{});
+				context.point_ranges_valid_ = false;
+				context.point_ranges_.clear();
 				context.build_id_ = build_id_;
 			}
 
@@ -266,12 +285,26 @@ namespace cellmate
 		// append neighbors of one query position without clearing the output
 		void append_neighbors(std::array<float, 3> query_pos, QueryContext& context, std::vector<std::size_t>& neighbors) const
 		{
+			CellBounds bounds;
+			if (!query_cell_bounds(query_pos, bounds)) { return; }
+			gather_query_ranges(bounds, context);
+
 			// resolve position storage without retaining pointers into the vectors
 			const bool copied = point_access_ == PointAccess::cpy;
 			const std::array<const float*, 3> positions = copied
 				? std::array<const float*, 3>{ copied_ordered_positions_[0].data(), copied_ordered_positions_[1].data(), copied_ordered_positions_[2].data() }
 				: positions_;
 
+			const detail::DistQuery dist_query(query_pos, radius_ * radius_);
+			for (const QueryContext::PointRange& range : context.point_ranges_)
+			{
+				append_range_neighbors(range.begin, range.end, positions, copied, dist_query, neighbors);
+			}
+		}
+
+		// compute generous query bounds, returning false when they miss the grid
+		bool query_cell_bounds(std::array<float, 3> query_pos, CellBounds& bounds) const
+		{
 			// query position relative to the grid in cell units
 			const double center_x = (double(query_pos[0]) - origin_[0]) / radius_;
 			const double center_y = (double(query_pos[1]) - origin_[1]) / radius_;
@@ -290,58 +323,86 @@ namespace cellmate
 			const double last_x = (std::min)(double(last_cell_[0]), std::floor(center_x + 1 + margin_x));
 			const double last_y = (std::min)(double(last_cell_[1]), std::floor(center_y + 1 + margin_y));
 			const double last_z = (std::min)(double(last_cell_[2]), std::floor(center_z + 1 + margin_z));
-			if (first_x > last_x || first_y > last_y || first_z > last_z) { return; }
+			if (first_x > last_x || first_y > last_y || first_z > last_z) { return false; }
 
-			const std::array<uint32_t, 3> begin{ static_cast<uint32_t>(first_x),
-												 static_cast<uint32_t>(first_y),
-												 static_cast<uint32_t>(first_z) };
-			const std::array<uint32_t, 3> end{ static_cast<uint32_t>(last_x),
-											   static_cast<uint32_t>(last_y),
-											   static_cast<uint32_t>(last_z) };
+			bounds.first = { static_cast<uint32_t>(first_x),
+							 static_cast<uint32_t>(first_y),
+							 static_cast<uint32_t>(first_z) };
+			bounds.last = { static_cast<uint32_t>(last_x),
+							static_cast<uint32_t>(last_y),
+							static_cast<uint32_t>(last_z) };
+			return true;
+		}
 
-			const detail::DistQuery dist_query(query_pos, radius_ * radius_);
+		// collect occupied point ranges in traversal order, reusing identical bounds
+		// TODO: instead of gathering query ranges, store cell indices explicitly and reuse subsets of it for nearby queries?
+		void gather_query_ranges(const CellBounds& bounds, QueryContext& context) const
+		{
+			// reuse previous ranges if bounds are identical
+			if (context.point_ranges_valid_ &&
+				context.cell_bounds_.first == bounds.first &&
+				context.cell_bounds_.last == bounds.last)
+			{
+				return;
+			}
 
-			// visit candidate cells and check contained points
-			for (uint32_t z = begin[2]; z <= end[2]; z++)
+			context.point_ranges_valid_ = false;
+			context.point_ranges_.clear();
+
+			// collect and merge point ranges from occupied cells in traversal order, skipping empty cells
+			for (uint32_t z = bounds.first[2]; z <= bounds.last[2]; z++)
 			{
 				const uint64_t z_code = spread_bits(z) << 2;
-				for (uint32_t y = begin[1]; y <= end[1]; y++)
+				for (uint32_t y = bounds.first[1]; y <= bounds.last[1]; y++)
 				{
 					const uint64_t yz_code = z_code | (spread_bits(y) << 1);
-					for (uint32_t x = begin[0]; x <= end[0]; x++)
+					for (uint32_t x = bounds.first[0]; x <= bounds.last[0]; x++)
 					{
 						const uint64_t key = yz_code | spread_bits(x);
 						const std::size_t cell_idx = find_cell(key, context);
 						if (cell_idx == cell_keys_.size()) { continue; }
 
-						append_cell_neighbors(cell_idx, positions, copied, dist_query, neighbors);
+						const std::size_t begin = cell_starts_[cell_idx];
+						const std::size_t end = cell_starts_[cell_idx + 1];
+						// merge only forward-adjacent ranges to preserve neighbor order
+						if (!context.point_ranges_.empty() && context.point_ranges_.back().end == begin)
+						{
+							context.point_ranges_.back().end = end;
+						}
+						else
+						{
+							context.point_ranges_.push_back({ begin, end });
+						}
 					}
 				}
 			}
+			context.cell_bounds_ = bounds;
+			context.point_ranges_valid_ = true;
 		}
 
 		// collect original indices of points within the search radius
-		// (filtering one cell, preserving output order of the original indices)
-		void append_cell_neighbors(std::size_t cell_idx, const std::array<const float*, 3>& positions,
+		// (filtering one point range, preserving output order of the original indices)
+		void append_range_neighbors(std::size_t begin, std::size_t end, const std::array<const float*, 3>& positions,
 			bool copied, const detail::DistQuery& dist_query, std::vector<std::size_t>& neighbors) const
 		{
-			std::size_t i = cell_starts_[cell_idx];
-			const std::size_t cell_end = cell_starts_[cell_idx + 1];
+			std::size_t i = begin;
 			if (copied) // optional SIMD mask distance checks for contiguous positions
 			{
-				for (; cell_end - i >= detail::DistQuery::N_lanes; i += detail::DistQuery::N_lanes)
+				for (; end - i >= detail::DistQuery::N_lanes; i += detail::DistQuery::N_lanes)
 				{
-					const unsigned mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i);
-					for (std::size_t lane = 0; lane < detail::DistQuery::N_lanes; lane++)
+					unsigned mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i);
+					while (mask != 0)
 					{
-						if (mask & (1u << lane)) { neighbors.push_back(point_order_[i + lane].idx); }
+						const unsigned lane = detail::first_set_bit(mask);
+						neighbors.push_back(point_order_[i + lane].idx);
+						mask &= mask - 1;
 					}
 				}
 			}
 
 			// scalar distance checks for non-contiguous positions
 			// (or for the remainder after the SIMD check loop, if available)
-			for (; i < cell_end; i++)
+			for (; i < end; i++)
 			{
 				const std::size_t idx = copied ? i : point_order_[i].idx;
 				if (dist_query.contains(positions[0][idx], positions[1][idx], positions[2][idx]))

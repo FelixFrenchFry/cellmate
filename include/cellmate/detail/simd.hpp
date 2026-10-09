@@ -2,6 +2,10 @@
 
 #include <cfloat>
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+
 // choose one backend for every translation unit that includes cellmate
 #if (defined(CELLMATE_SIMD_AUTO) + defined(CELLMATE_SIMD_SCALAR) + defined(CELLMATE_SIMD_AVX256) + defined(CELLMATE_SIMD_AVX512)) > 1
 #error "cellmate::simd backend selections must not conflict"
@@ -57,3 +61,29 @@ namespace cellmate
 	}
 }
 #endif
+
+namespace cellmate
+{
+	namespace detail
+	{
+		// index of the lowest set bit in a nonzero distance mask
+		inline unsigned first_set_bit(unsigned mask) noexcept
+		{
+#if defined(_MSC_VER)
+			unsigned long lane;
+			_BitScanForward(&lane, mask);
+			return static_cast<unsigned>(lane);
+#elif defined(__GNUC__) || defined(__clang__)
+			return static_cast<unsigned>(__builtin_ctz(mask));
+#else
+			unsigned lane = 0;
+			while ((mask & 1u) == 0)
+			{
+				mask >>= 1;
+				lane++;
+			}
+			return lane;
+#endif
+		}
+	}
+}
