@@ -11,8 +11,8 @@
 #error "cellmate::simd backend selections must not conflict"
 #endif
 
-#if defined(CELLMATE_SIMD_AVX256) && !defined(__AVX__)
-#error "cellmate::simd AVX256 requires an AVX compiler target"
+#if defined(CELLMATE_SIMD_AVX256) && !defined(__AVX2__)
+#error "cellmate::simd AVX256 requires an AVX2 compiler target"
 #endif
 
 #if defined(CELLMATE_SIMD_AVX512) && !defined(__AVX512F__)
@@ -27,9 +27,10 @@
 #error "cellmate::simd requires /fp:strict on MSVC before Visual Studio 2022, use SCALAR or enable /fp:strict"
 #endif
 
-// AUTO selects AVX256 only when scalar precision and contraction controls match
+// AUTO selects AVX256 only when AVX2 is available and scalar precision and contraction controls match
 // (AVX512 is only selected when CELLMATE_SIMD_AVX512 is explicitly defined)
 #if defined(CELLMATE_SIMD_AVX512)
+#define CELLMATE_DETAIL_SIMD_WIDTH 512
 #include "simd_avx512.hpp"
 
 namespace cellmate
@@ -39,8 +40,9 @@ namespace cellmate
 		using DistQuery = DistQueryAVX512;
 	}
 }
-#elif !defined(CELLMATE_SIMD_SCALAR) && defined(__AVX__) && (FLT_EVAL_METHOD == 0 || FLT_EVAL_METHOD == 1) && \
+#elif !defined(CELLMATE_SIMD_SCALAR) && defined(__AVX2__) && (FLT_EVAL_METHOD == 0 || FLT_EVAL_METHOD == 1) && \
 	(!defined(_MSC_VER) || defined(__clang__) || _MSC_VER >= 1930 || defined(_M_FP_STRICT))
+#define CELLMATE_DETAIL_SIMD_WIDTH 256
 #include "simd_avx256.hpp"
 
 namespace cellmate
@@ -51,6 +53,7 @@ namespace cellmate
 	}
 }
 #else
+#define CELLMATE_DETAIL_SIMD_WIDTH 0
 #include "simd_scalar.hpp"
 
 namespace cellmate
