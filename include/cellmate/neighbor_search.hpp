@@ -381,16 +381,30 @@ namespace cellmate
 			context.point_ranges_valid_ = false;
 			context.point_ranges_.clear();
 
+			// spread x and y bits once instead of per row and per cell
+			// (bounds span at most 4 cells per axis, 3 plus 1 from the rounding margin)
+			assert(bounds.last[0] - bounds.first[0] < 4 && bounds.last[1] - bounds.first[1] < 4);
+			std::array<uint64_t, 4> x_codes{};
+			std::array<uint64_t, 4> y_codes{};
+			for (uint32_t x = bounds.first[0]; x <= bounds.last[0]; x++)
+			{
+				x_codes[x - bounds.first[0]] = spread_bits(x);
+			}
+			for (uint32_t y = bounds.first[1]; y <= bounds.last[1]; y++)
+			{
+				y_codes[y - bounds.first[1]] = spread_bits(y) << 1;
+			}
+
 			// collect and merge point ranges from occupied cells in traversal order, skipping empty cells
 			for (uint32_t z = bounds.first[2]; z <= bounds.last[2]; z++)
 			{
 				const uint64_t z_code = spread_bits(z) << 2;
 				for (uint32_t y = bounds.first[1]; y <= bounds.last[1]; y++)
 				{
-					const uint64_t yz_code = z_code | (spread_bits(y) << 1);
+					const uint64_t yz_code = z_code | y_codes[y - bounds.first[1]];
 					for (uint32_t x = bounds.first[0]; x <= bounds.last[0]; x++)
 					{
-						const uint64_t key = yz_code | spread_bits(x);
+						const uint64_t key = yz_code | x_codes[x - bounds.first[0]];
 						const std::size_t cell_idx = find_cell(key, context);
 						if (cell_idx == cell_keys_.size()) { continue; }
 
