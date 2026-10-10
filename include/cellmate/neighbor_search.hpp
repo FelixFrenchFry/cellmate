@@ -365,7 +365,16 @@ namespace cellmate
 						if (cell_idx == cell_keys_.size()) { continue; }
 
 						const std::size_t begin = cell_starts_[cell_idx];
-						const std::size_t end = cell_starts_[cell_idx + 1];
+						std::size_t end = cell_starts_[cell_idx + 1];
+						// consecutive even/odd x cells have consecutive Morton keys
+						if ((x & 1) == 0 && x < bounds.last[0])
+						{
+							x++;
+							if (cell_idx + 1 < cell_keys_.size() && cell_keys_[cell_idx + 1] == key + 1)
+							{
+								end = cell_starts_[cell_idx + 2];
+							}
+						}
 						// merge only forward-adjacent ranges to preserve neighbor order
 						if (!context.point_ranges_.empty() && context.point_ranges_.back().end == begin)
 						{
