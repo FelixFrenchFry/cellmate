@@ -33,6 +33,13 @@ namespace cellmate
 		par  // run in parallel, if OpenMP available and useful
 	};
 
+	// controls the processing order of batch queries
+	enum class QueryOrder
+	{
+		morton, // spatially reorder queries by Morton code before querying
+		input   // process queries in the supplied input order
+	};
+
 	// controls whether input data is copied or read directly
 	enum class PointAccess
 	{
@@ -123,11 +130,16 @@ namespace cellmate
 
 		// TODO: XML documentation?
 		void query_batch(const float* x, const float* y, const float* z, std::size_t N_queries,
-			std::vector<std::size_t>& neighbors, std::vector<std::size_t>& offsets, ComputeMode exec = ComputeMode::par) const
+			std::vector<std::size_t>& neighbors, std::vector<std::size_t>& offsets,
+			ComputeMode exec = ComputeMode::par, QueryOrder order = QueryOrder::morton) const
 		{
 			if (&neighbors == &offsets)
 			{
 				throw std::invalid_argument("cellmate::query_batch() requires distinct output vectors");
+			}
+			if (order != QueryOrder::morton && order != QueryOrder::input)
+			{
+				throw std::invalid_argument("cellmate::query_batch() query order must be morton or input");
 			}
 			if (N_queries >= offsets.max_size())
 			{
@@ -167,7 +179,7 @@ namespace cellmate
 			// (belongs to the caller, including buffers used by its parallel threads)
 			// TODO: perform explicit scratch release after unusually large batches?
 			static thread_local BatchScratch scratch;
-			scratch.query_order_.resize(N_queries);
+			if (order == QueryOrder::morton) { scratch.query_order_.resize(N_queries); }
 
 #ifdef _OPENMP
 			// select sequential or parallel version on execution mode and heuristics
@@ -175,15 +187,15 @@ namespace cellmate
 			if (exec == ComputeMode::par && N_threads > 1 &&
 				N_queries <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
-				query_batch_par(x, y, z, scratch, neighbors, offsets, N_threads);
+				query_batch_par(x, y, z, static_cast<std::ptrdiff_t>(N_queries), scratch, neighbors, offsets, N_threads, order);
 			}
 			else
 			{
-				query_batch_seq(x, y, z, scratch, neighbors, offsets);
+				query_batch_seq(x, y, z, N_queries, scratch, neighbors, offsets, order);
 			}
 #else
 			(void)exec;
-			query_batch_seq(x, y, z, scratch, neighbors, offsets);
+			query_batch_seq(x, y, z, N_queries, scratch, neighbors, offsets, order);
 #endif
 		}
 
@@ -424,14 +436,28 @@ namespace cellmate
 		}
 
 		// TODO: rework to avoid temporary neighbor buffer duplication (huge memory peak)?
-		void query_batch_seq(const float* x, const float* y, const float* z,
+		void query_batch_seq(const float* x, const float* y, const float* z, std::size_t N_queries,
 			BatchScratch& scratch,
 			std::vector<std::size_t>& neighbors,
-			std::vector<std::size_t>& offsets) const
+			std::vector<std::size_t>& offsets,
+			QueryOrder order) const
 		{
+			if (order == QueryOrder::input)
+			{
+				// append directly to output, without temporary storage or row restoration
+				neighbors.clear();
+				offsets[0] = 0;
+				QueryContext& context = thread_context();
+				for (std::size_t i = 0; i < N_queries; i++)
+				{
+					append_neighbors({ x[i], y[i], z[i] }, context, neighbors);
+					offsets[i + 1] = neighbors.size();
+				}
+				return;
+			}
+
 			// assign Morton keys and original indices to each query
 			std::vector<PointEntry>& query_order = scratch.query_order_;
-			const std::size_t N_queries = query_order.size();
 			for (std::size_t i = 0; i < N_queries; i++)
 			{
 				const uint32_t cx = query_cell_coord(x[i], 0);
@@ -485,37 +511,40 @@ namespace cellmate
 
 #ifdef _OPENMP
 		// TODO: rework to avoid temporary neighbor buffer duplication (huge memory peak)?
-		void query_batch_par(const float* x, const float* y, const float* z,
+		void query_batch_par(const float* x, const float* y, const float* z, std::ptrdiff_t N_queries,
 			BatchScratch& scratch,
 			std::vector<std::size_t>& neighbors,
 			std::vector<std::size_t>& offsets,
-			int N_threads) const
+			int N_threads,
+			QueryOrder order) const
 		{
-			// assign Morton keys and original indices to each query in parallel
 			std::vector<PointEntry>& query_order = scratch.query_order_;
-			const std::ptrdiff_t N_queries = static_cast<std::ptrdiff_t>(query_order.size());
-			#pragma omp parallel for schedule(static) num_threads(N_threads)
-			for (std::ptrdiff_t i = 0; i < N_queries; i++)
+			if (order == QueryOrder::morton)
 			{
-				const uint32_t cx = query_cell_coord(x[i], 0);
-				const uint32_t cy = query_cell_coord(y[i], 1);
-				const uint32_t cz = query_cell_coord(z[i], 2);
-				query_order[i] = { morton_key(cx, cy, cz), static_cast<std::size_t>(i) };
+				// assign Morton keys and original indices to each query in parallel
+				#pragma omp parallel for schedule(static) num_threads(N_threads)
+				for (std::ptrdiff_t i = 0; i < N_queries; i++)
+				{
+					const uint32_t cx = query_cell_coord(x[i], 0);
+					const uint32_t cy = query_cell_coord(y[i], 1);
+					const uint32_t cz = query_cell_coord(z[i], 2);
+					query_order[i] = { morton_key(cx, cy, cz), static_cast<std::size_t>(i) };
+				}
+
+				// sort query indices by Morton key
+				const uint64_t max_key = morton_key(last_cell_[0], last_cell_[1], last_cell_[2]);
+				const int N_sort_threads = select_thread_count(query_order.size(), ComputeMode::par, 4096);
+				if (N_sort_threads > 1)
+				{
+					sort_point_order_par(query_order, scratch.query_order_scratch_, scratch.radix_offsets_, max_key, N_sort_threads);
+				}
+				else
+				{
+					sort_point_order_seq(query_order, scratch.query_order_scratch_, max_key);
+				}
 			}
 
-			// sort query indices by Morton key
-			const uint64_t max_key = morton_key(last_cell_[0], last_cell_[1], last_cell_[2]);
-			const int N_sort_threads = select_thread_count(query_order.size(), ComputeMode::par, 4096);
-			if (N_sort_threads > 1)
-			{
-				sort_point_order_par(query_order, scratch.query_order_scratch_, scratch.radix_offsets_, max_key, N_sort_threads);
-			}
-			else
-			{
-				sort_point_order_seq(query_order, scratch.query_order_scratch_, max_key);
-			}
-
-			// divide Morton-ordered queries into one contiguous chunk per thread
+			// divide queries into one contiguous chunk per thread
 			const std::ptrdiff_t chunk_size = N_queries / N_threads + (N_queries % N_threads != 0);
 			const std::ptrdiff_t N_chunks = N_queries / chunk_size + (N_queries % chunk_size != 0);
 			std::vector<std::vector<std::size_t>>& chunk_neighbors = scratch.chunk_neighbors_;
@@ -535,12 +564,25 @@ namespace cellmate
 					QueryContext& context = thread_context();
 					std::vector<std::size_t>& buffer = chunk_neighbors[chunk];
 					buffer.clear();
-					for (std::ptrdiff_t i = begin; i < end; i++)
+					if (order == QueryOrder::morton)
 					{
-						const std::size_t idx = query_order[i].idx;
-						const std::size_t start = buffer.size();
-						append_neighbors({ x[idx], y[idx], z[idx] }, context, buffer);
-						offsets[idx] = buffer.size() - start;
+						for (std::ptrdiff_t i = begin; i < end; i++)
+						{
+							const std::size_t idx = query_order[i].idx;
+							const std::size_t start = buffer.size();
+							append_neighbors({ x[idx], y[idx], z[idx] }, context, buffer);
+							offsets[idx] = buffer.size() - start;
+						}
+					}
+					else
+					{
+						for (std::ptrdiff_t i = begin; i < end; i++)
+						{
+							const std::size_t idx = static_cast<std::size_t>(i);
+							const std::size_t start = buffer.size();
+							append_neighbors({ x[idx], y[idx], z[idx] }, context, buffer);
+							offsets[idx] = buffer.size() - start;
+						}
 					}
 				}
 				catch (...)
@@ -577,15 +619,23 @@ namespace cellmate
 				const std::ptrdiff_t begin = chunk * chunk_size;
 				const std::ptrdiff_t end = begin + (std::min)(chunk_size, N_queries - begin);
 				const std::vector<std::size_t>& buffer = chunk_neighbors[chunk];
-				// read rows in the same order they were appended to this buffer
-				std::size_t source_offset = 0;
-				for (std::ptrdiff_t i = begin; i < end; i++)
+				if (order == QueryOrder::morton)
 				{
-					const std::size_t idx = query_order[i].idx;
-					const std::size_t count = offsets[idx + 1] - offsets[idx];
-					if (count == 0) { continue; }
-					std::copy_n(buffer.begin() + source_offset, count, neighbors.begin() + offsets[idx]);
-					source_offset += count;
+					// read rows in the same order they were appended to this buffer
+					std::size_t source_offset = 0;
+					for (std::ptrdiff_t i = begin; i < end; i++)
+					{
+						const std::size_t idx = query_order[i].idx;
+						const std::size_t count = offsets[idx + 1] - offsets[idx];
+						if (count == 0) { continue; }
+						std::copy_n(buffer.begin() + source_offset, count, neighbors.begin() + offsets[idx]);
+						source_offset += count;
+					}
+				}
+				else
+				{
+					// each chunk already contains consecutive output rows
+					std::copy(buffer.begin(), buffer.end(), neighbors.begin() + offsets[begin]);
 				}
 			}
 		}
