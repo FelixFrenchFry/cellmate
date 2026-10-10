@@ -28,11 +28,11 @@ namespace cellmate
 			const unsigned first_mask = mask & 0xffu;
 			const unsigned second_mask = (mask >> 8) & 0xffu;
 #if defined(_MSC_VER)
-			const std::size_t N_first = first_mask == 0 ? 0 : __popcnt(first_mask);
-			const std::size_t N_second = second_mask == 0 ? 0 : __popcnt(second_mask);
+			const std::size_t N_first = __popcnt(first_mask);
+			const std::size_t N_second = __popcnt(second_mask);
 #else
-			const std::size_t N_first = first_mask == 0 ? 0 : static_cast<std::size_t>(__builtin_popcount(first_mask));
-			const std::size_t N_second = second_mask == 0 ? 0 : static_cast<std::size_t>(__builtin_popcount(second_mask));
+			const std::size_t N_first = static_cast<std::size_t>(__builtin_popcount(first_mask));
+			const std::size_t N_second = static_cast<std::size_t>(__builtin_popcount(second_mask));
 #endif
 
 			// extract indices from the odd 64-bit lanes and pack both halves in order

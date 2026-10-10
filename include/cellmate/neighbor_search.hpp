@@ -14,6 +14,16 @@
 
 #include "detail/index_compaction.hpp"
 
+// use BMI2 PDEP for Morton encoding when the compiler target guarantees it
+// (fallback to bit-shifts and masks)
+#if (defined(_M_X64) || defined(__x86_64__)) && !defined(_M_ARM64EC) && \
+	(defined(__BMI2__) || (defined(_MSC_VER) && !defined(__clang__) && defined(__AVX2__)))
+#define CELLMATE_DETAIL_HAS_BMI2 1
+#include <immintrin.h>
+#else
+#define CELLMATE_DETAIL_HAS_BMI2 0
+#endif
+
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -1236,6 +1246,9 @@ namespace cellmate
 		// spread 21 coordinate bits into bit positions 0, 3, 6, ..., 60 of a 63-bit key
 		static uint64_t spread_bits(uint32_t value)
 		{
+#if CELLMATE_DETAIL_HAS_BMI2
+			return _pdep_u64(value, 0x1249249249249249ULL);
+#else
 			uint64_t bits = value;
 
 			bits = (bits | (bits << 32)) & 0x1f00000000ffffULL;
@@ -1245,6 +1258,7 @@ namespace cellmate
 			bits = (bits | (bits << 2)) & 0x1249249249249249ULL;
 
 			return bits;
+#endif
 		}
 
 		// interleave three 21-bit coordinates into a single 63-bit Morton key
