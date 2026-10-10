@@ -55,13 +55,19 @@ namespace cellmate
 		explicit NeighborSearch(float radius, PointAccess point_access = PointAccess::cpy)
 			: radius_(radius), point_access_(point_access)
 		{
+			radius_squ_ = radius_ * radius_;
+
 			if (!std::isfinite(radius) || radius <= 0)
 			{
-				throw std::invalid_argument("cellmate::NeighborSearch() radius must be finite and positive");
+				throw std::invalid_argument("cellmate::NeighborSearch() 'radius' must be finite and positive");
+			}
+			if (!std::isnormal(radius_squ_))
+			{
+				throw std::invalid_argument("cellmate::NeighborSearch() squared 'radius' must be a finite positive normal float");
 			}
 			if (point_access != PointAccess::cpy && point_access != PointAccess::ref)
 			{
-				throw std::invalid_argument("cellmate::NeighborSearch() point access must be cpy or ref");
+				throw std::invalid_argument("cellmate::NeighborSearch() 'point_access' must be 'cpy' or 'ref'");
 			}
 		}
 
@@ -121,7 +127,7 @@ namespace cellmate
 
 			if (!std::isfinite(query_pos[0]) || !std::isfinite(query_pos[1]) || !std::isfinite(query_pos[2]))
 			{
-				throw std::invalid_argument("cellmate::query() query position must be finite");
+				throw std::invalid_argument("cellmate::query() 'query_pos' must be finite");
 			}
 			if (!build_id_) { return; }
 
@@ -139,11 +145,11 @@ namespace cellmate
 			}
 			if (order != QueryOrder::morton && order != QueryOrder::input)
 			{
-				throw std::invalid_argument("cellmate::query_batch() query order must be morton or input");
+				throw std::invalid_argument("cellmate::query_batch() 'order' must be 'morton' or 'input'");
 			}
 			if (N_queries >= offsets.max_size())
 			{
-				throw std::length_error("cellmate::query_batch() query count exceeds output limits");
+				throw std::length_error("cellmate::query_batch() 'N_queries' exceeds output limits");
 			}
 			if (N_queries == 0)
 			{
@@ -251,7 +257,8 @@ namespace cellmate
 			std::vector<std::vector<std::size_t>> chunk_neighbors_; // neighbors collected per chunk before restoring query row order
 		};
 
-		double radius_;
+		float radius_;
+		float radius_squ_;
 		PointAccess point_access_;
 		std::array<const float*, 3> positions_{};
 		std::array<std::vector<float>, 3> copied_ordered_positions_;
@@ -311,7 +318,7 @@ namespace cellmate
 				? std::array<const float*, 3>{ copied_ordered_positions_[0].data(), copied_ordered_positions_[1].data(), copied_ordered_positions_[2].data() }
 				: positions_;
 
-			const detail::DistQuery dist_query(query_pos, radius_ * radius_);
+			const detail::DistQuery dist_query(query_pos, radius_squ_);
 			// allow a full-width store when one group crosses the flush threshold
 			std::size_t buffer[N_neighbor_buffer + detail::DistQuery::N_lanes - 1];
 			std::size_t N_buffered = 0;
@@ -338,23 +345,24 @@ namespace cellmate
 		bool query_cell_bounds(std::array<float, 3> query_pos, CellBounds& bounds) const
 		{
 			// query position relative to the grid in cell units
-			const double center_x = (double(query_pos[0]) - origin_[0]) / radius_;
-			const double center_y = (double(query_pos[1]) - origin_[1]) / radius_;
-			const double center_z = (double(query_pos[2]) - origin_[2]) / radius_;
+			const float center_x = (query_pos[0] - origin_[0]) / radius_;
+			const float center_y = (query_pos[1] - origin_[1]) / radius_;
+			const float center_z = (query_pos[2] - origin_[2]) / radius_;
+			if (!std::isfinite(center_x) || !std::isfinite(center_y) || !std::isfinite(center_z)) { return false; }
 
 			// expand cell bounds to account for fp rounding
-			// (affects which canididate cells are included in the search, not the actual distance check)
-			const double margin_x = 8 * std::numeric_limits<double>::epsilon() * (std::abs(center_x) + 1);
-			const double margin_y = 8 * std::numeric_limits<double>::epsilon() * (std::abs(center_y) + 1);
-			const double margin_z = 8 * std::numeric_limits<double>::epsilon() * (std::abs(center_z) + 1);
+			// (covers cell assignment and cutoff rounding without changing the distance predicate)
+			const float margin_x = 8 * std::numeric_limits<float>::epsilon() * (std::abs(center_x) + 1.0f);
+			const float margin_y = 8 * std::numeric_limits<float>::epsilon() * (std::abs(center_y) + 1.0f);
+			const float margin_z = 8 * std::numeric_limits<float>::epsilon() * (std::abs(center_z) + 1.0f);
 
 			// find candidate cell bounds, clipped to the extent of the grid
-			const double first_x = (std::max)(0.0, std::floor(center_x - 1 - margin_x));
-			const double first_y = (std::max)(0.0, std::floor(center_y - 1 - margin_y));
-			const double first_z = (std::max)(0.0, std::floor(center_z - 1 - margin_z));
-			const double last_x = (std::min)(double(last_cell_[0]), std::floor(center_x + 1 + margin_x));
-			const double last_y = (std::min)(double(last_cell_[1]), std::floor(center_y + 1 + margin_y));
-			const double last_z = (std::min)(double(last_cell_[2]), std::floor(center_z + 1 + margin_z));
+			const float first_x = (std::max)(0.0f, std::floor(center_x - 1.0f - margin_x));
+			const float first_y = (std::max)(0.0f, std::floor(center_y - 1.0f - margin_y));
+			const float first_z = (std::max)(0.0f, std::floor(center_z - 1.0f - margin_z));
+			const float last_x = (std::min)(float(last_cell_[0]), std::floor(center_x + 1.0f + margin_x));
+			const float last_y = (std::min)(float(last_cell_[1]), std::floor(center_y + 1.0f + margin_y));
+			const float last_z = (std::min)(float(last_cell_[2]), std::floor(center_z + 1.0f + margin_z));
 			if (first_x > last_x || first_y > last_y || first_z > last_z) { return false; }
 
 			bounds.first = { static_cast<uint32_t>(first_x),
@@ -382,10 +390,10 @@ namespace cellmate
 			context.point_ranges_.clear();
 
 			// spread x and y bits once instead of per row and per cell
-			// (bounds span at most 4 cells per axis, 3 plus 1 from the rounding margin)
-			assert(bounds.last[0] - bounds.first[0] < 4 && bounds.last[1] - bounds.first[1] < 4);
-			std::array<uint64_t, 4> x_codes{};
-			std::array<uint64_t, 4> y_codes{};
+			// (8 slots cover the float rounding margin across 21-bit cell extents)
+			assert(bounds.last[0] - bounds.first[0] < 8 && bounds.last[1] - bounds.first[1] < 8);
+			std::array<uint64_t, 8> x_codes{};
+			std::array<uint64_t, 8> y_codes{};
 			for (uint32_t x = bounds.first[0]; x <= bounds.last[0]; x++)
 			{
 				x_codes[x - bounds.first[0]] = spread_bits(x);
@@ -1205,7 +1213,7 @@ namespace cellmate
 		// convert one position coordinate to a cell coordinate relative to the grid origin
 		uint32_t cell_coord(float coordinate, std::size_t axis) const
 		{
-			const double cell_coordinate = std::floor((double(coordinate) - origin_[axis]) / radius_);
+			const float cell_coordinate = std::floor((coordinate - origin_[axis]) / radius_);
 
 			if (cell_coordinate >= (1u << 21)) // TODO: disable in release builds?
 			{
@@ -1219,8 +1227,8 @@ namespace cellmate
 		// (clamp only the sorting key, distance checks still use the original position)
 		uint32_t query_cell_coord(float coordinate, std::size_t axis) const
 		{
-			const double cell_coordinate = std::floor((double(coordinate) - origin_[axis]) / radius_);
-			const double cell_coordinate_clamped = (std::max)(0.0, (std::min)(double(last_cell_[axis]), cell_coordinate));
+			const float cell_coordinate = std::floor((coordinate - origin_[axis]) / radius_);
+			const float cell_coordinate_clamped = (std::max)(0.0f, (std::min)(float(last_cell_[axis]), cell_coordinate));
 	
 			return static_cast<uint32_t>(cell_coordinate_clamped);
 		}

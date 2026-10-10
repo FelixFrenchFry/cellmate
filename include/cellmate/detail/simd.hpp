@@ -19,8 +19,8 @@
 #error "cellmate::simd AVX512 requires an AVX512F compiler target"
 #endif
 
-#if (defined(CELLMATE_SIMD_AVX256) || defined(CELLMATE_SIMD_AVX512)) && (FLT_EVAL_METHOD != 0 && FLT_EVAL_METHOD != 1)
-#error "cellmate::simd requires double evaluation precision, use SCALAR or -mfpmath=sse on GCC x86"
+#if FLT_EVAL_METHOD != 0
+#error "cellmate requires float evaluation precision (FLT_EVAL_METHOD == 0), use -mfpmath=sse on GCC x86"
 #endif
 
 #if (defined(CELLMATE_SIMD_AVX256) || defined(CELLMATE_SIMD_AVX512)) && defined(_MSC_VER) && !defined(__clang__) && _MSC_VER < 1930 && !defined(_M_FP_STRICT)
@@ -40,8 +40,7 @@ namespace cellmate
 		using DistQuery = DistQueryAVX512;
 	}
 }
-#elif !defined(CELLMATE_SIMD_SCALAR) && defined(__AVX2__) && (FLT_EVAL_METHOD == 0 || FLT_EVAL_METHOD == 1) && \
-	(!defined(_MSC_VER) || defined(__clang__) || _MSC_VER >= 1930 || defined(_M_FP_STRICT))
+#elif !defined(CELLMATE_SIMD_SCALAR) && defined(__AVX2__) && (!defined(_MSC_VER) || defined(__clang__) || _MSC_VER >= 1930 || defined(_M_FP_STRICT))
 #define CELLMATE_DETAIL_SIMD_WIDTH 256
 #include "simd_avx256.hpp"
 

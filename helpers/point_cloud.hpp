@@ -22,7 +22,7 @@ namespace cellmate_helpers
 	{
 		if (!std::isfinite(min) || !std::isfinite(max) || min >= max)
 		{
-			throw std::invalid_argument("make_uniform_cloud() bounds must be finite and min < max");
+			throw std::invalid_argument("make_uniform_cloud() bounds must be finite and 'min' < 'max'");
 		}
 
 		PointCloud points;

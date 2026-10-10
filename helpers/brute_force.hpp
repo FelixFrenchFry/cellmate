@@ -4,6 +4,10 @@
 #include <cstddef>
 #include <vector>
 
+#include "../include/cellmate/detail/fp_control.hpp"
+
+CELLMATE_DETAIL_FP_BEGIN
+
 namespace cellmate_helpers
 {
 	// expects finite positions and a finite positive radius
@@ -11,15 +15,16 @@ namespace cellmate_helpers
 		std::size_t N_points, float radius, std::array<float, 3> query_pos,
 		std::vector<std::size_t>& neighbors)
 	{
+		CELLMATE_DETAIL_FP_NO_CONTRACT
 		neighbors.clear();
-		const double radius_sq = double(radius) * radius;
+		const float radius_sq = radius * radius;
 
 		// check every point, including self and points on the cutoff
 		for (std::size_t i = 0; i < N_points; i++)
 		{
-			const double dx = double(query_pos[0]) - x[i];
-			const double dy = double(query_pos[1]) - y[i];
-			const double dz = double(query_pos[2]) - z[i];
+			const float dx = query_pos[0] - x[i];
+			const float dy = query_pos[1] - y[i];
+			const float dz = query_pos[2] - z[i];
 			
 			if (dx * dx + dy * dy + dz * dz <= radius_sq)
 			{
@@ -28,3 +33,5 @@ namespace cellmate_helpers
 		}
 	}
 }
+
+CELLMATE_DETAIL_FP_END

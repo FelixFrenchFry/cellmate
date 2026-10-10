@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <array>
 #include <cfenv>
+#include <cmath>
 #include <cstddef>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -25,6 +27,23 @@ TEST(NeighborSearchQuery, PreservesConsumerRounding)
 	ASSERT_GT(value, 1.0);
 }
 #endif
+
+// verifies that squared radii stay within the supported float range
+TEST(NeighborSearchQuery, RejectsUnsupportedSquaredRadii)
+{
+	const float smallest = std::ldexp(1.0f, -63);
+	const float largest = std::nextafter(std::ldexp(1.0f, 64), 0.0f);
+	EXPECT_NO_THROW((void)cellmate::NeighborSearch(smallest));
+	EXPECT_NO_THROW((void)cellmate::NeighborSearch(largest));
+	for (float radius : { 0.0f, -1.0f, std::nextafter(smallest, 0.0f),
+		std::ldexp(1.0f, 64), (std::numeric_limits<float>::max)(),
+		(std::numeric_limits<float>::min)(), std::numeric_limits<float>::denorm_min(),
+		std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN() })
+	{
+		SCOPED_TRACE(::testing::Message() << "radius = " << radius);
+		EXPECT_THROW((void)cellmate::NeighborSearch(radius), std::invalid_argument);
+	}
+}
 
 // verifies that queries at every point match brute force
 // (output order of the neighbor search result does not matter)
@@ -48,6 +67,63 @@ TEST(NeighborSearchQuery, QueryMatchesBruteForce)
 
 		std::sort(neighbors.begin(), neighbors.end());
 		ASSERT_EQ(neighbors, expected) << "seed = 67, query index = " << i;
+	}
+}
+
+// verifies float cell bounds near the grid limit and at supported radius extremes
+TEST(NeighborSearchQuery, FloatCellBoundsMatchBruteForceAcrossWideExtents)
+{
+	for (float radius : { std::ldexp(1.0f, -63), 0.75f, 1.0f,
+		std::nextafter(std::ldexp(1.0f, 64), 0.0f) })
+	{
+		cellmate_helpers::PointCloud points{ { 0.0f }, { 0.0f }, { 0.0f } };
+		const float center = radius * float((1u << 21) - 16);
+		for (int i = -12; i <= 12; i++)
+		{
+			const float coordinate = center + float(i) * 0.25f * radius;
+			points.x.push_back(coordinate);
+			points.y.push_back(coordinate);
+			points.z.push_back(coordinate);
+		}
+		for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+		{
+			SCOPED_TRACE(::testing::Message() << "radius = " << radius << ", storage = " << static_cast<int>(storage));
+			cellmate::NeighborSearch search(radius, storage);
+			search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), cellmate::ComputeMode::seq);
+			std::vector<std::size_t> neighbors, expected;
+			for (float coordinate : points.x)
+			{
+				for (float query_x : { coordinate, std::nextafter(coordinate, -std::numeric_limits<float>::infinity()),
+					std::nextafter(coordinate, std::numeric_limits<float>::infinity()) })
+				{
+					const std::array<float, 3> query_pos{ query_x, coordinate, coordinate };
+					search.query(query_pos, neighbors);
+					cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(),
+						points.x.size(), radius, query_pos, expected);
+					std::sort(neighbors.begin(), neighbors.end());
+					ASSERT_EQ(neighbors, expected) << "query x = " << query_x;
+				}
+			}
+		}
+	}
+}
+
+// verifies distant queries remain empty when subtraction overflows in the local frame
+TEST(NeighborSearchQuery, DistantFloatQueriesHandleOverflow)
+{
+	const float far = (std::numeric_limits<float>::max)();
+	const float x[]{ far }, yz[1]{};
+	const float query_x[]{ -far, far }, query_yz[2]{};
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		cellmate::NeighborSearch search(1.0f, storage);
+		search.rebuild(x, yz, yz, 1);
+		std::vector<std::size_t> neighbors, offsets;
+		search.query({ -far, 0.0f, 0.0f }, neighbors);
+		ASSERT_TRUE(neighbors.empty());
+		search.query_batch(query_x, query_yz, query_yz, 2, neighbors, offsets);
+		ASSERT_EQ(neighbors, (std::vector<std::size_t>{ 0 }));
+		ASSERT_EQ(offsets, (std::vector<std::size_t>{ 0, 0, 1 }));
 	}
 }
 
