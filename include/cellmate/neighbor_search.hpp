@@ -1131,9 +1131,9 @@ namespace cellmate
 
 			// choose directory size based on occupied cell count heuristics
 			constexpr std::size_t N_prefixes_min = 512;
-			constexpr std::size_t N_prefixes_max = 8192;
+			constexpr std::size_t N_prefixes_max = 131072;
 			constexpr std::size_t N_prefix_growth = 2;
-			constexpr std::size_t N_cells_per_prefix = 128;
+			constexpr std::size_t N_cells_per_prefix = 4;
 
 			const std::size_t N_prefixes_target = N_cells / N_cells_per_prefix + (N_cells % N_cells_per_prefix != 0);
 			std::size_t N_prefixes = N_prefixes_min;
