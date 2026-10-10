@@ -1050,19 +1050,32 @@ namespace cellmate
 				last = first + cell_prefix_[static_cast<std::size_t>(prefix) + 1];
 			}
 
+			// compare small ranges directly and cache the matching cell or miss
+			std::size_t count = static_cast<std::size_t>(last - cell);
+			constexpr std::size_t N_linear = 2;
+			if (count <= N_linear)
+			{
+				unsigned mask = 0;
+				for (std::size_t i = 0; i < count; i++)
+				{
+					mask |= static_cast<unsigned>(cell[i] == key) << i;
+				}
+				entry.key = key;
+				entry.idx = mask == 0
+					? cell_keys_.size()
+					: static_cast<std::size_t>(cell - first) + detail::first_set_bit(mask);
+				return entry.idx;
+			}
+
 			// shrink the range independently of the key comparison
 			// (allows conditional moves instead of unpredictable branches)
-			std::size_t count = static_cast<std::size_t>(last - cell);
-			if (count != 0)
+			while (count > 1)
 			{
-				while (count > 1)
-				{
-					const std::size_t half = count / 2;
-					cell = cell[half] < key ? cell + half : cell;
-					count -= half;
-				}
-				cell += *cell < key;
+				const std::size_t half = count / 2;
+				cell = cell[half] < key ? cell + half : cell;
+				count -= half;
 			}
+			cell += *cell < key;
 			entry.key = key;
 			entry.idx = cell == last || *cell != key
 				? cell_keys_.size()

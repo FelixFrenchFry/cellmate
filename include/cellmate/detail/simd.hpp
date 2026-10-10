@@ -66,7 +66,7 @@ namespace cellmate
 {
 	namespace detail
 	{
-		// index of the lowest set bit in a nonzero distance mask
+		// index of the lowest set bit in a nonzero mask
 		inline unsigned first_set_bit(unsigned mask) noexcept
 		{
 #if defined(_MSC_VER)
