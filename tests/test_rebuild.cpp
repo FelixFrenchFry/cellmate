@@ -121,6 +121,68 @@ TEST(NeighborSearchRebuild, SparseCellsMatchAcrossRebuilds)
 	}
 }
 
+// verifies cell lookup and cache invalidation while the prefix directory grows and shrinks
+// (covers both storage and execution modes, sparse keys, and empty rebuilds)
+TEST(NeighborSearchRebuild, PrefixDirectorySizesPreserveQueryResults)
+{
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+		{
+			cellmate::NeighborSearch search(1.0f, storage);
+			cellmate_helpers::PointCloud points, queries;
+			std::vector<std::size_t> neighbors, offsets;
+			for (std::size_t N_points : { 65536u, 65537u, 131073u, 262145u, 524289u,
+				1048577u, 262144u, 2048u, 0u, 65536u })
+			{
+				SCOPED_TRACE(::testing::Message() << "point count = " << N_points
+					<< ", storage = " << static_cast<int>(storage) << ", execution = " << static_cast<int>(execution));
+				points.x.resize(N_points);
+				points.y.assign(N_points, 0.0f);
+				points.z.assign(N_points, 0.0f);
+				for (std::size_t i = 0; i < N_points; i++) { points.x[i] = 1.5f * float(i); }
+				const float extent = 1.5f * float(N_points);
+				if (N_points != 0) { points.y.back() = points.z.back() = extent; }
+				search.rebuild(points.x.data(), points.y.data(), points.z.data(), N_points, execution);
+
+				const std::array<float, 3> positions[]{
+					{ 0.0f, 0.0f, 0.0f }, { 1.5f, 0.0f, 0.0f }, { 0.75f, 0.0f, 0.0f },
+					{ extent / 2, 0.0f, 0.0f }, { extent / 2, extent / 2, 0.0f },
+					{ extent - 1.5f, extent, extent }
+				};
+				std::array<std::vector<std::size_t>, 6> expected;
+				for (std::size_t i = 0; i < expected.size(); i++)
+				{
+					cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(),
+						N_points, 1.0f, positions[i], expected[i]);
+					search.query(positions[i], neighbors);
+					std::sort(neighbors.begin(), neighbors.end());
+					ASSERT_EQ(neighbors, expected[i]);
+				}
+
+				queries.x.resize(513);
+				queries.y.resize(513);
+				queries.z.resize(513);
+				for (std::size_t i = 0; i < queries.x.size(); i++)
+				{
+					const auto& position = positions[i % expected.size()];
+					queries.x[i] = position[0]; queries.y[i] = position[1]; queries.z[i] = position[2];
+				}
+				search.query_batch(queries.x.data(), queries.y.data(), queries.z.data(), queries.x.size(),
+					neighbors, offsets, execution);
+				ASSERT_EQ(offsets.size(), queries.x.size() + 1);
+				ASSERT_EQ(offsets.back(), neighbors.size());
+				for (std::size_t i = 0; i < queries.x.size(); i++)
+				{
+					std::vector<std::size_t> row(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
+					std::sort(row.begin(), row.end());
+					ASSERT_EQ(row, expected[i % expected.size()]) << "query index = " << i;
+				}
+			}
+		}
+	}
+}
+
 // verifies that failed rebuilds clear query results and allow reuse
 // (also checks empty rebuilds in both storage and execution modes)
 TEST(NeighborSearchRebuild, FailedAndEmptyRebuildsClearTheSearch)

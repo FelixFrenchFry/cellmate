@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <iterator>
 #include <limits>
 #include <thread>
 #include <vector>
@@ -193,6 +194,94 @@ TEST(NeighborSearchQueryBatch, RangesPreserveTraversalOrder)
 	}
 }
 
+// verifies traversal order as query bounds shift, expand, shrink, and miss the grid
+// (covers all adjacent directions, empty cells, and both storage and execution modes)
+TEST(NeighborSearchQueryBatch, OverlappingBoundsPreserveTraversalOrder)
+{
+	cellmate_helpers::PointCloud points{ { 0.0f, 6.0f }, { 0.0f, 6.0f }, { 0.0f, 6.0f } };
+	for (int z = 5; z >= 0; z--)
+	{
+		for (int y = 5; y >= 0; y--)
+		{
+			for (int x = 5; x >= 0; x--)
+			{
+				if ((x + 2 * y + 3 * z) % 4 == 0) { continue; }
+				for (float offset : { 0.75f, 0.5f, 0.25f })
+				{
+					points.x.push_back(float(x) + offset);
+					points.y.push_back(float(y) + offset);
+					points.z.push_back(float(z) + offset);
+				}
+			}
+		}
+	}
+	std::vector<std::array<float, 3>> positions;
+	for (int z = -1; z <= 1; z++)
+	{
+		for (int y = -1; y <= 1; y++)
+		{
+			for (int x = -1; x <= 1; x++)
+			{
+				positions.push_back({ 2.5f, 2.5f, 2.5f });
+				positions.push_back({ 2.5f + float(x), 2.5f + float(y), 2.5f + float(z) });
+			}
+		}
+	}
+	const std::array<float, 3> boundaries[]{
+		{ 2.0f, 2.0f, 2.0f }, { 2.5f, 2.5f, 2.5f }, { 0.25f, 0.25f, 0.25f },
+		{ -0.75f, 0.25f, 0.25f }, { 0.25f, 0.25f, 0.25f }, { 0.25f, 1.25f, 0.25f },
+		{ 0.25f, 0.25f, 1.25f }, { 6.25f, 6.25f, 6.25f }, { 5.75f, 5.75f, 5.75f },
+		{ 100.0f, 100.0f, 100.0f }, { 3.5f, 3.5f, 3.5f },
+		{ 2.0f, 2.5f, 2.5f }, { 2.5f, 2.0f, 2.5f }, { 2.5f, 2.5f, 2.0f }
+	};
+	positions.insert(positions.end(), std::begin(boundaries), std::end(boundaries));
+	std::vector<std::vector<std::size_t>> expected(positions.size());
+	for (std::size_t i = 0; i < positions.size(); i++)
+	{
+		cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(), points.x.size(),
+			1.0f, positions[i], expected[i]);
+		// order the oracle by cell traversal, retaining input order within each cell
+		std::sort(expected[i].begin(), expected[i].end(), [&](std::size_t a, std::size_t b)
+		{
+			const std::array<int, 3> first{ int(points.z[a]), int(points.y[a]), int(points.x[a]) };
+			const std::array<int, 3> second{ int(points.z[b]), int(points.y[b]), int(points.x[b]) };
+			return first != second ? first < second : a < b;
+		});
+	}
+	std::vector<float> query_x(513), query_y(513), query_z(513);
+	for (std::size_t i = 0; i < query_x.size(); i++)
+	{
+		const auto& position = positions[i % positions.size()];
+		query_x[i] = position[0];
+		query_y[i] = position[1];
+		query_z[i] = position[2];
+	}
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+		{
+			SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage)
+				<< ", execution = " << static_cast<int>(execution));
+			cellmate::NeighborSearch search(1.0f, storage);
+			search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), execution);
+			std::vector<std::size_t> neighbors, offsets;
+			for (std::size_t i = 0; i < positions.size(); i++)
+			{
+				search.query(positions[i], neighbors);
+				ASSERT_EQ(neighbors, expected[i]) << "query index = " << i;
+			}
+			search.query_batch(query_x.data(), query_y.data(), query_z.data(), query_x.size(), neighbors, offsets, execution);
+			ASSERT_EQ(offsets.size(), query_x.size() + 1);
+			ASSERT_EQ(offsets.back(), neighbors.size());
+			for (std::size_t i = 0; i < query_x.size(); i++)
+			{
+				const std::vector<std::size_t> row(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
+				ASSERT_EQ(row, expected[i % positions.size()]) << "query index = " << i;
+			}
+		}
+	}
+}
+
 // verifies original row order across all Morton key bytes and out-of-grid queries
 // (covers repeated keys, empty rows, uneven chunks, and both storage and execution modes)
 TEST(NeighborSearchQueryBatch, PreservesRowsAcrossWideExtents)
@@ -296,6 +385,102 @@ TEST(NeighborSearchQueryBatch, RepeatedBatchesPreserveRows)
 	}
 }
 
+// verifies both query orders across reused batches and uneven chunks, including empty chunks
+TEST(NeighborSearchQueryBatch, QueryOrdersPreserveRowsAcrossRepeatedBatches)
+{
+	const float x[]{ 2.0f, 0.0f, 1.0f, 0.0f, 4.0f };
+	const float y[5]{}, z[5]{};
+	const float positions[]{ 2.0f, 100.0f, 0.0f, 1.0f, -1.0f, 4.0f };
+	const std::vector<std::size_t> expected[]{ { 2, 0 }, {}, { 1, 3, 2 }, { 1, 3, 2, 0 }, { 1, 3 }, { 4 } };
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		cellmate::NeighborSearch search(1.0f, storage);
+		search.rebuild(x, y, z, 5, cellmate::ComputeMode::seq);
+		std::vector<std::size_t> neighbors{ 99 }, offsets{ 99 };
+		for (std::size_t N_queries : { 8193u, 1u, 0u, 513u, 8193u })
+		{
+			std::vector<float> query_x(N_queries), query_y(N_queries, 0.0f), query_z(N_queries, 0.0f);
+			for (std::size_t i = 0; i < N_queries; i++)
+			{
+				query_x[i] = i < N_queries / 2 ? 100.0f : positions[i % 6];
+			}
+			for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+			{
+				for (cellmate::QueryOrder order : { cellmate::QueryOrder::input, cellmate::QueryOrder::morton, cellmate::QueryOrder::input })
+				{
+					SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage)
+						<< ", execution = " << static_cast<int>(execution) << ", query order = " << static_cast<int>(order)
+						<< ", query count = " << N_queries);
+					search.query_batch(query_x.data(), query_y.data(), query_z.data(), N_queries, neighbors, offsets, execution, order);
+					ASSERT_EQ(offsets.size(), N_queries + 1);
+					std::size_t offset = 0;
+					for (std::size_t i = 0; i < N_queries; i++)
+					{
+						const auto& row = expected[i < N_queries / 2 ? 1 : i % 6];
+						ASSERT_EQ(query_x[i], i < N_queries / 2 ? 100.0f : positions[i % 6]);
+						ASSERT_EQ(query_y[i], 0.0f);
+						ASSERT_EQ(query_z[i], 0.0f);
+						ASSERT_EQ(offsets[i], offset);
+						offset += row.size();
+						ASSERT_EQ(offsets[i + 1], offset);
+						ASSERT_LE(offset, neighbors.size());
+						ASSERT_TRUE(std::equal(row.begin(), row.end(), neighbors.begin() + offsets[i]));
+					}
+					ASSERT_EQ(offsets.back(), neighbors.size());
+					ASSERT_EQ(neighbors.size(), offset);
+				}
+			}
+		}
+	}
+}
+
+// verifies public validation and empty results when query ordering is bypassed
+TEST(NeighborSearchQueryBatch, InputOrderValidatesArgumentsAndHandlesEmptySearches)
+{
+	cellmate::NeighborSearch search(1.0f);
+	const float coordinates[]{ 0.0f };
+	const float invalid[]{ (std::numeric_limits<float>::quiet_NaN)() };
+	std::vector<std::size_t> neighbors{ 99 }, offsets{ 99 };
+	for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+	{
+		EXPECT_THROW(search.query_batch(nullptr, coordinates, coordinates, 1, neighbors, offsets,
+			execution, cellmate::QueryOrder::input), std::invalid_argument);
+		EXPECT_THROW(search.query_batch(coordinates, nullptr, coordinates, 1, neighbors, offsets,
+			execution, cellmate::QueryOrder::input), std::invalid_argument);
+		EXPECT_THROW(search.query_batch(coordinates, coordinates, nullptr, 1, neighbors, offsets,
+			execution, cellmate::QueryOrder::input), std::invalid_argument);
+		EXPECT_THROW(search.query_batch(invalid, coordinates, coordinates, 1, neighbors, offsets,
+			execution, cellmate::QueryOrder::input), std::invalid_argument);
+		EXPECT_THROW(search.query_batch(coordinates, invalid, coordinates, 1, neighbors, offsets,
+			execution, cellmate::QueryOrder::input), std::invalid_argument);
+		EXPECT_THROW(search.query_batch(coordinates, coordinates, invalid, 1, neighbors, offsets,
+			execution, cellmate::QueryOrder::input), std::invalid_argument);
+		EXPECT_THROW(search.query_batch(nullptr, nullptr, nullptr, 0, neighbors, neighbors,
+			execution, cellmate::QueryOrder::input), std::invalid_argument);
+		EXPECT_THROW(search.query_batch(nullptr, nullptr, nullptr, (std::numeric_limits<std::size_t>::max)(), neighbors, offsets,
+			execution, cellmate::QueryOrder::input), std::length_error);
+		EXPECT_THROW(search.query_batch(nullptr, nullptr, nullptr, 0, neighbors, offsets,
+			execution, static_cast<cellmate::QueryOrder>(2)), std::invalid_argument);
+		search.query_batch(nullptr, nullptr, nullptr, 0, neighbors, offsets, execution, cellmate::QueryOrder::input);
+		EXPECT_TRUE(neighbors.empty());
+		EXPECT_EQ(offsets, std::vector<std::size_t>({ 0 }));
+		search.query_batch(coordinates, coordinates, coordinates, 1, neighbors, offsets, execution, cellmate::QueryOrder::input);
+		EXPECT_TRUE(neighbors.empty());
+		EXPECT_EQ(offsets, std::vector<std::size_t>({ 0, 0 }));
+	}
+
+	search.rebuild(coordinates, coordinates, coordinates, 1, cellmate::ComputeMode::seq);
+	const std::vector<float> outside(513, 100.0f);
+	for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+	{
+		neighbors.assign(1, 99);
+		search.query_batch(outside.data(), outside.data(), outside.data(), outside.size(),
+			neighbors, offsets, execution, cellmate::QueryOrder::input);
+		EXPECT_TRUE(neighbors.empty());
+		EXPECT_EQ(offsets, std::vector<std::size_t>(outside.size() + 1, 0));
+	}
+}
+
 // verifies that simultaneous batch calls keep their reused sorting and result buffers separate
 TEST(NeighborSearchQueryBatch, ConcurrentBatchesMatchBruteForce)
 {
@@ -312,9 +497,11 @@ TEST(NeighborSearchQueryBatch, ConcurrentBatchesMatchBruteForce)
 			{
 				const auto queries = cellmate_helpers::make_uniform_cloud(8193, static_cast<unsigned>(67 + thread), -4.0f, 4.0f);
 				std::vector<std::size_t> neighbors, offsets, expected;
+				const auto order = thread == 0 ? cellmate::QueryOrder::input : cellmate::QueryOrder::morton;
 				for (int repeat = 0; repeat < 2; repeat++)
 				{
-					search.query_batch(queries.x.data(), queries.y.data(), queries.z.data(), queries.x.size(), neighbors, offsets);
+					search.query_batch(queries.x.data(), queries.y.data(), queries.z.data(), queries.x.size(),
+						neighbors, offsets, cellmate::ComputeMode::par, order);
 				}
 				if (offsets.size() != queries.x.size() + 1 || offsets.front() != 0 || offsets.back() != neighbors.size())
 				{

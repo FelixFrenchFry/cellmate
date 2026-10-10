@@ -127,6 +127,29 @@ TEST(NeighborSearchQuery, DistantFloatQueriesHandleOverflow)
 	}
 }
 
+// verifies matches and misses when the cell table contains exactly two keys
+TEST(NeighborSearchQuery, TwoOccupiedCellsPreserveResults)
+{
+	const float x[]{ 0.0f, 3.0f }, y[2]{}, z[2]{};
+	const float query_x[]{ 3.0f, 1.5f, 0.0f, 3.0f, 1.5f }, query_yz[5]{};
+	const std::vector<std::size_t> expected[]{ { 1 }, {}, { 0 }, { 1 }, {} };
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage));
+		cellmate::NeighborSearch search(1.0f, storage);
+		search.rebuild(x, y, z, 2, cellmate::ComputeMode::seq);
+		std::vector<std::size_t> neighbors, offsets;
+		for (std::size_t i = 0; i < 5; i++)
+		{
+			search.query({ query_x[i], 0.0f, 0.0f }, neighbors);
+			ASSERT_EQ(neighbors, expected[i]);
+		}
+		search.query_batch(query_x, query_yz, query_yz, 5, neighbors, offsets, cellmate::ComputeMode::seq);
+		ASSERT_EQ(offsets, (std::vector<std::size_t>{ 0, 1, 1, 2, 3, 3 }));
+		ASSERT_EQ(neighbors, (std::vector<std::size_t>{ 1, 0, 1 }));
+	}
+}
+
 // verifies that queries sharing cell bounds still filter their own positions
 TEST(NeighborSearchQuery, RepeatedBoundsPreserveDistanceFiltering)
 {

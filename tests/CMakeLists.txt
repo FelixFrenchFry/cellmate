@@ -22,6 +22,7 @@ FetchContent_MakeAvailable(googletest)
 
 # build the correctness tests
 add_executable(cellmate_tests
+	test_index_compaction.cpp
 	test_rebuild.cpp
 	test_query.cpp
 	test_query_batch.cpp
