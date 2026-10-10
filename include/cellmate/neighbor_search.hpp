@@ -12,7 +12,7 @@
 #include <stdexcept>
 #include <vector>
 
-#include "detail/simd.hpp"
+#include "detail/index_compaction.hpp"
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -296,6 +296,8 @@ namespace cellmate
 			return context;
 		}
 
+		static constexpr std::size_t N_neighbor_buffer = 64;
+
 		// append neighbors of one query position without clearing the output
 		void append_neighbors(std::array<float, 3> query_pos, QueryContext& context, std::vector<std::size_t>& neighbors) const
 		{
@@ -310,10 +312,26 @@ namespace cellmate
 				: positions_;
 
 			const detail::DistQuery dist_query(query_pos, radius_ * radius_);
+			// allow a full-width store when one group crosses the flush threshold
+			std::size_t buffer[N_neighbor_buffer + detail::DistQuery::N_lanes - 1];
+			std::size_t N_buffered = 0;
+
 			for (const QueryContext::PointRange& range : context.point_ranges_)
 			{
-				append_range_neighbors(range.begin, range.end, positions, copied, dist_query, neighbors);
+				append_range_neighbors(range.begin, range.end, positions, copied, dist_query, neighbors, buffer, N_buffered);
 			}
+			flush_neighbor_buffer(neighbors, buffer, N_buffered);
+		}
+
+		// move buffered neighbor indices to the output
+		static void flush_neighbor_buffer(
+			std::vector<std::size_t>& neighbors,
+			const std::size_t* buffer,
+			std::size_t& N_buffered)
+		{
+			if (N_buffered == 0) { return; }
+			neighbors.insert(neighbors.end(), buffer, buffer + N_buffered);
+			N_buffered = 0;
 		}
 
 		// compute generous query bounds, returning false when they miss the grid
@@ -405,20 +423,36 @@ namespace cellmate
 
 		// collect original indices of points within the search radius
 		// (filtering one point range, preserving output order of the original indices)
+		// buffer and count are shared by all ranges of one query
 		void append_range_neighbors(std::size_t begin, std::size_t end, const std::array<const float*, 3>& positions,
-			bool copied, const detail::DistQuery& dist_query, std::vector<std::size_t>& neighbors) const
+			bool copied, const detail::DistQuery& dist_query, std::vector<std::size_t>& neighbors,
+			std::size_t* buffer, std::size_t& N_buffered) const
 		{
+			const bool use_buffer = copied && detail::has_index_compaction;
+
 			std::size_t i = begin;
 			if (copied) // optional SIMD mask distance checks for contiguous positions
 			{
 				for (; end - i >= detail::DistQuery::N_lanes; i += detail::DistQuery::N_lanes)
 				{
 					unsigned mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i);
-					while (mask != 0)
+					if (mask == 0) { continue; }
+					if (use_buffer)
 					{
-						const unsigned lane = detail::first_set_bit(mask);
-						neighbors.push_back(point_order_[i + lane].idx);
-						mask &= mask - 1;
+						N_buffered += detail::pack_neighbor_indices(point_order_.data() + i, mask, buffer + N_buffered);
+						if (N_buffered >= N_neighbor_buffer)
+						{
+							flush_neighbor_buffer(neighbors, buffer, N_buffered);
+						}
+					}
+					else
+					{
+						while (mask != 0)
+						{
+							const unsigned lane = detail::first_set_bit(mask);
+							neighbors.push_back(point_order_[i + lane].idx);
+							mask &= mask - 1;
+						}
 					}
 				}
 			}
@@ -430,7 +464,18 @@ namespace cellmate
 				const std::size_t idx = copied ? i : point_order_[i].idx;
 				if (dist_query.contains(positions[0][idx], positions[1][idx], positions[2][idx]))
 				{
-					neighbors.push_back(point_order_[i].idx);
+					if (use_buffer)
+					{
+						buffer[N_buffered++] = point_order_[i].idx;
+						if (N_buffered >= N_neighbor_buffer)
+						{
+							flush_neighbor_buffer(neighbors, buffer, N_buffered);
+						}
+					}
+					else
+					{
+						neighbors.push_back(point_order_[i].idx);
+					}
 				}
 			}
 		}
