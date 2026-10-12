@@ -56,7 +56,7 @@ namespace cellmate_bench
 #endif
 	}
 
-	// run sequential and parallel rebuild() benchmarks
+	// run sequential and parallel 'rebuild()' benchmarks
 	BENCHMARK_CAPTURE(rebuild, seq, cellmate::ComputeMode::seq)->Apply(configure);
 #ifdef _OPENMP
 	BENCHMARK_CAPTURE(rebuild, par, cellmate::ComputeMode::par)
@@ -95,7 +95,7 @@ namespace cellmate_bench
 		}
 	}
 
-	// run sequential query() benchmarks
+	// run sequential 'query()' benchmarks
 	BENCHMARK(query)->Name("query/cellmate/seq")->Apply(configure);
 
 	void query_batch(benchmark::State& state, cellmate::ComputeMode exec)
@@ -146,7 +146,7 @@ namespace cellmate_bench
 #endif
 	}
 
-	// run sequential and parallel query_batch() benchmarks
+	// run sequential and parallel 'query_batch()' benchmarks
 	BENCHMARK_CAPTURE(query_batch, seq, cellmate::ComputeMode::seq)->Apply(configure);
 #ifdef _OPENMP
 	BENCHMARK_CAPTURE(query_batch, par, cellmate::ComputeMode::par)

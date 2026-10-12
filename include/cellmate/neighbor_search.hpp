@@ -69,15 +69,15 @@ namespace cellmate
 
 			if (!std::isfinite(radius) || radius <= 0)
 			{
-				throw std::invalid_argument("cellmate::NeighborSearch() 'radius' must be finite and positive");
+				throw std::invalid_argument("'cellmate::NeighborSearch()' 'radius' must be finite and positive");
 			}
 			if (!std::isnormal(radius_squ_))
 			{
-				throw std::invalid_argument("cellmate::NeighborSearch() squared 'radius' must be a finite positive normal float");
+				throw std::invalid_argument("'cellmate::NeighborSearch()' squared 'radius' must be a finite positive normal float");
 			}
 			if (point_access != PointAccess::cpy && point_access != PointAccess::ref)
 			{
-				throw std::invalid_argument("cellmate::NeighborSearch() 'point_access' must be 'cpy' or 'ref'");
+				throw std::invalid_argument("'cellmate::NeighborSearch()' 'point_access' must be 'cpy' or 'ref'");
 			}
 		}
 
@@ -89,8 +89,8 @@ namespace cellmate
 			cell_prefix_.clear();
 			cell_prefix_shift_ = 64;
 
-			// point order and cell table keep their storage, so resize() does not zero-fill them
-			// (each rebuild path must overwrite all entries after resize() or clear before appending)
+			// point order and cell table keep their storage, so 'resize()' does not zero-fill them
+			// (each rebuild path must overwrite all entries after 'resize()' or clear before appending)
 			if (N_points == 0)
 			{
 				point_order_.clear();
@@ -103,7 +103,7 @@ namespace cellmate
 			}
 			if (!x || !y || !z)
 			{
-				throw std::invalid_argument("cellmate::rebuild() requires three coordinate arrays");
+				throw std::invalid_argument("'cellmate::rebuild()' requires three coordinate arrays");
 			}
 
 #ifdef _OPENMP
@@ -137,7 +137,7 @@ namespace cellmate
 
 			if (!std::isfinite(query_pos[0]) || !std::isfinite(query_pos[1]) || !std::isfinite(query_pos[2]))
 			{
-				throw std::invalid_argument("cellmate::query() 'query_pos' must be finite");
+				throw std::invalid_argument("'cellmate::query()' 'query_pos' must be finite");
 			}
 			if (!build_id_) { return; }
 
@@ -151,15 +151,15 @@ namespace cellmate
 		{
 			if (&neighbors == &offsets)
 			{
-				throw std::invalid_argument("cellmate::query_batch() requires distinct output vectors");
+				throw std::invalid_argument("'cellmate::query_batch()' requires distinct output vectors");
 			}
 			if (order != QueryOrder::morton && order != QueryOrder::input)
 			{
-				throw std::invalid_argument("cellmate::query_batch() 'order' must be 'morton' or 'input'");
+				throw std::invalid_argument("'cellmate::query_batch()' 'order' must be 'morton' or 'input'");
 			}
 			if (N_queries >= offsets.max_size())
 			{
-				throw std::length_error("cellmate::query_batch() 'N_queries' exceeds output limits");
+				throw std::length_error("'cellmate::query_batch()' 'N_queries' exceeds output limits");
 			}
 			if (N_queries == 0)
 			{
@@ -169,7 +169,7 @@ namespace cellmate
 			}
 			if (!x || !y || !z)
 			{
-				throw std::invalid_argument("cellmate::query_batch() requires three coordinate arrays");
+				throw std::invalid_argument("'cellmate::query_batch()' requires three coordinate arrays");
 			}
 
 			// validate query positions before starting parallel work
@@ -178,7 +178,7 @@ namespace cellmate
 			{
 				if (!std::isfinite(x[i]) || !std::isfinite(y[i]) || !std::isfinite(z[i]))
 				{
-					throw std::invalid_argument("cellmate::query_batch() query positions must be finite");
+					throw std::invalid_argument("'cellmate::query_batch()' query positions must be finite");
 				}
 			}
 
@@ -289,7 +289,7 @@ namespace cellmate
 		std::vector<std::size_t> cell_chunk_offsets_;
 
 		// cell prefix directory with the start index of each key range, plus sentinel
-		// (restricts find_cell() searches to cell keys with the same prefix bits)
+		// (restricts 'find_cell()' searches to cell keys with the same prefix bits)
 		std::vector<std::size_t> cell_prefix_; // retains capacity across rebuilds
 		// key shift to directory range, 64 flags directory as unused
 		uint32_t cell_prefix_shift_ = 64;
@@ -334,7 +334,7 @@ namespace cellmate
 		}
 
 		// finds neighbors for one query using candidate ranges and SIMD across candidates
-		// (appends matching point IDs to neighbors, preserving existing entries)
+		// (appends matching point IDs to 'neighbors', preserving existing entries)
 		template<bool copied>
 		void find_neighbors_from_ranges(std::array<float, 3> query_pos, const QueryContext& context,
 			std::vector<std::size_t>& neighbors) const
@@ -373,7 +373,7 @@ namespace cellmate
 		}
 
 		// computes the inclusive bounding box of candidate cells for a query, clamped to the grid
-		// (returns false when none of the candidate cells are within the grid)
+		// (returns 'false' when none of the candidate cells are within the grid)
 		bool query_cell_bounds(std::array<float, 3> query_pos, CellBounds& bounds) const
 		{
 			// determine query's cell relative to the grid origin
@@ -531,7 +531,7 @@ namespace cellmate
 		}
 
 		// finds neighbors for a full query group using shared candidate ranges and SIMD across queries
-		// (stores a separate neighbor list for each query in context.query_neighbors_)
+		// (stores a separate neighbor list for each query in 'context.query_neighbors_')
 		template<bool copied>
 		void find_group_neighbors_from_ranges(const detail::DistQueryGroup& dist_queries, QueryContext& context) const
 		{
@@ -556,8 +556,8 @@ namespace cellmate
 			// check each candidate point against all queries in the group
 			for (const QueryContext::PointRange& range : context.point_ranges_)
 			{
-				// process candidates as tiles of N_lanes queries and N_lanes candidates
-				// (pack batch of N_lanes neighbors into a query's list at once, instead of individually)
+				// process candidates as tiles of 'N_lanes' queries and 'N_lanes' candidates
+				// (pack batch of 'N_lanes' neighbors into a query's list at once, instead of individually)
 				std::size_t i = range.begin;
 				for (; range.end - i >= N_lanes; i += N_lanes)
 				{
@@ -624,7 +624,7 @@ namespace cellmate
 
 		// finds groups of queries in the range that share the same candidate cell bounds and process
 		// them either in a group or individually, decision based on group size to SIMD width ratio
-		// (appends neighbor lists to buffer, storing each count in offsets at its original query index)
+		// (appends neighbor lists to 'buffer', storing each count in 'offsets' at its original query index)
 		void query_batch_morton_range(const float* x, const float* y, const float* z,
 			const std::vector<PointEntry>& query_order, std::size_t begin, std::size_t end,
 			QueryContext& context, std::vector<std::size_t>& buffer, std::vector<std::size_t>& offsets) const
@@ -707,7 +707,7 @@ namespace cellmate
 		}
 
 		// restores neighbor lists collected in Morton order to the original query order
-		// (copies each query's IDs from buffer into neighbors at its output offset)
+		// (copies each query's IDs from 'buffer' into 'neighbors' at its output offset)
 		static void restore_query_results_order(const std::vector<PointEntry>& query_order, std::size_t begin, std::size_t end,
 			const std::vector<std::size_t>& buffer, const std::vector<std::size_t>& offsets,
 			std::vector<std::size_t>& neighbors)
@@ -820,7 +820,7 @@ namespace cellmate
 			std::exception_ptr error;
 
 			// collect neighbors of each chunk in a separate buffer
-			// (offsets temporarily store each original query's neighbor count)
+			// ('offsets' temporarily store each original query's neighbor count)
 			#pragma omp parallel for schedule(static) num_threads(N_threads)
 			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 			{
@@ -865,7 +865,7 @@ namespace cellmate
 				const std::size_t count = offsets[i];
 				if (count > neighbors.max_size() - N_neighbors)
 				{
-					throw std::length_error("cellmate::query_batch() neighbor count exceeds output limits");
+					throw std::length_error("'cellmate::query_batch()' neighbor count exceeds output limits");
 				}
 				offsets[i] = N_neighbors;
 				N_neighbors += count;
@@ -937,7 +937,7 @@ namespace cellmate
 			{
 				if (!std::isfinite(x[i]) || !std::isfinite(y[i]) || !std::isfinite(z[i]))
 				{
-					throw std::invalid_argument("cellmate::rebuild() coordinates must be finite");
+					throw std::invalid_argument("'cellmate::rebuild()' coordinates must be finite");
 				}
 
 				minimum[0] = (std::min)(minimum[0], x[i]);
@@ -1027,7 +1027,7 @@ namespace cellmate
 
 			if (invalid)
 			{
-				throw std::invalid_argument("cellmate::rebuild() coordinates must be finite");
+				throw std::invalid_argument("'cellmate::rebuild()' coordinates must be finite");
 			}
 
 			// set grid origin at the minimum (x,y,z) to avoid negative Morton keys and validate grid extent
@@ -1404,7 +1404,7 @@ namespace cellmate
 
 			if (cell_coordinate >= (1u << 21)) // TODO: disable in release builds?
 			{
-				throw std::out_of_range("cellmate::rebuild() extent exceeds 21-bit cell coordinates");
+				throw std::out_of_range("'cellmate::rebuild()' extent exceeds 21-bit cell coordinates");
 			}
 
 			return static_cast<uint32_t>(cell_coordinate);
@@ -1454,9 +1454,9 @@ namespace cellmate
 		// interleave three 21-bit coordinates into a single 63-bit Morton key
 		static uint64_t morton_key(uint32_t x, uint32_t y, uint32_t z)
 		{
-			// x occupies bit positions: 0, 3, 6, ..., 60
-			// y occupies bit positions: 1, 4, 7, ..., 61
-			// z occupies bit positions: 2, 5, 8, ..., 62
+			// 'x' occupies bit positions: 0, 3, 6, ..., 60
+			// 'y' occupies bit positions: 1, 4, 7, ..., 61
+			// 'z' occupies bit positions: 2, 5, 8, ..., 62
 			return spread_bits(x) | (spread_bits(y) << 1) | (spread_bits(z) << 2);
 		}
 	};

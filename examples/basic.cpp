@@ -6,7 +6,7 @@
 
 int main()
 {
-	// positions stored in separate x, y, z arrays
+	// positions stored in separate 'x', 'y', 'z' arrays
 	float x[]{ 0.0f, 0.5f, 2.0f, 0.0f, 0.0f, -0.5f };
 	float y[]{ 0.0f, 0.0f, 0.0f, 0.5f, 0.0f,  0.0f };
 	float z[]{ 0.0f, 0.0f, 0.0f, 0.0f, 1.5f,  0.0f };

@@ -44,7 +44,7 @@ namespace
 			for (std::size_t query = 0; query < N_lanes; query++)
 			{
 				SCOPED_TRACE(::testing::Message() << "lanes = " << N_lanes
-					<< ", candidate = " << candidate << ", query = " << query);
+					<< ", 'candidate' = " << candidate << ", 'query' = " << query);
 				candidate_masks[candidate] = 1u << query;
 				cellmate::detail::transpose_neighbor_masks<N_lanes>(candidate_masks, query_masks);
 				for (std::size_t lane = 0; lane < N_lanes; lane++)
@@ -87,7 +87,7 @@ TEST(NeighborIndexCompaction, MasksPreserveIndicesAndOrder)
 	const std::size_t guard = (std::numeric_limits<std::size_t>::max)();
 	for (unsigned mask = 0; mask < (1u << N_lanes); mask++)
 	{
-		SCOPED_TRACE(::testing::Message() << "mask = " << mask);
+		SCOPED_TRACE(::testing::Message() << "'mask' = " << mask);
 		std::array<std::size_t, cellmate::detail::DistQuery::N_lanes + 2> output;
 		output.fill(guard);
 		std::vector<std::size_t> expected;
@@ -116,7 +116,7 @@ TEST(NeighborSearchQuery, PartialMasksPreserveIndicesAcrossBufferBoundaries)
 			{
 				const unsigned mask = pattern & ((1u << N_lanes) - 1);
 				SCOPED_TRACE(::testing::Message() << "prefix = " << N_prefix
-					<< ", rejected = " << N_rejected << ", mask = " << mask);
+					<< ", rejected = " << N_rejected << ", 'mask' = " << mask);
 				// all candidates share one cell, (0.75, 0.75, 0.75) lies outside the radius
 				std::vector<float> coordinates(N_prefix + N_lanes + 1, 0.0f);
 				std::vector<std::size_t> expected;

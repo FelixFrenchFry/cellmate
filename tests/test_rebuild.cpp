@@ -50,7 +50,7 @@ TEST(NeighborSearchRebuild, RepeatedBoundsFollowSearchBuilds)
 	const std::vector<std::size_t> expected[]{ { 1 }, { 2, 3, 4 }, { 1 }, {}, { 2, 3, 4 } };
 	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
 	{
-		SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage));
+		SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage));
 		cellmate::NeighborSearch first(1.0f, storage), second(1.0f, storage);
 		second.rebuild(second_x, y, z, 6, cellmate::ComputeMode::seq);
 		std::vector<std::size_t> neighbors;
@@ -81,7 +81,7 @@ TEST(NeighborSearchRebuild, SparseCellsMatchAcrossRebuilds)
 			for (std::size_t N_points : { 2047u, 2048u, 2049u, 8193u, 1000u, 1u, 0u, 2048u })
 			{
 				SCOPED_TRACE(::testing::Message() << "point count = " << N_points
-					<< ", storage = " << static_cast<int>(storage) << ", execution = " << static_cast<int>(execution));
+					<< ", 'storage' = " << static_cast<int>(storage) << ", 'execution' = " << static_cast<int>(execution));
 				// alternate spacing so smaller rebuilds move cell keys to different indices
 				const float spacing = N_points % 2 != 0 ? 3.0f : 6.0f;
 				points.x.resize(N_points);
@@ -136,7 +136,7 @@ TEST(NeighborSearchRebuild, PrefixDirectorySizesPreserveQueryResults)
 				1048577u, 262144u, 2048u, 0u, 65536u })
 			{
 				SCOPED_TRACE(::testing::Message() << "point count = " << N_points
-					<< ", storage = " << static_cast<int>(storage) << ", execution = " << static_cast<int>(execution));
+					<< ", 'storage' = " << static_cast<int>(storage) << ", 'execution' = " << static_cast<int>(execution));
 				points.x.resize(N_points);
 				points.y.assign(N_points, 0.0f);
 				points.z.assign(N_points, 0.0f);

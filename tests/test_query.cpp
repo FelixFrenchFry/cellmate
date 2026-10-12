@@ -15,7 +15,7 @@
 
 #ifdef _MSC_VER
 // verifies that linking cellmate and including its headers preserve strict rounding
-// (the test target uses /fp:strict on MSVC)
+// (the test target uses '/fp:strict' on MSVC)
 TEST(NeighborSearchQuery, PreservesConsumerRounding)
 {
 	const int original_rounding = std::fegetround();
@@ -40,7 +40,7 @@ TEST(NeighborSearchQuery, RejectsUnsupportedSquaredRadii)
 		(std::numeric_limits<float>::min)(), std::numeric_limits<float>::denorm_min(),
 		std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN() })
 	{
-		SCOPED_TRACE(::testing::Message() << "radius = " << radius);
+		SCOPED_TRACE(::testing::Message() << "'radius' = " << radius);
 		EXPECT_THROW((void)cellmate::NeighborSearch(radius), std::invalid_argument);
 	}
 }
@@ -87,7 +87,7 @@ TEST(NeighborSearchQuery, FloatCellBoundsMatchBruteForceAcrossWideExtents)
 		}
 		for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
 		{
-			SCOPED_TRACE(::testing::Message() << "radius = " << radius << ", storage = " << static_cast<int>(storage));
+			SCOPED_TRACE(::testing::Message() << "'radius' = " << radius << ", 'storage' = " << static_cast<int>(storage));
 			cellmate::NeighborSearch search(radius, storage);
 			search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), cellmate::ComputeMode::seq);
 			std::vector<std::size_t> neighbors, expected;
@@ -135,7 +135,7 @@ TEST(NeighborSearchQuery, TwoOccupiedCellsPreserveResults)
 	const std::vector<std::size_t> expected[]{ { 1 }, {}, { 0 }, { 1 }, {} };
 	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
 	{
-		SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage));
+		SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage));
 		cellmate::NeighborSearch search(1.0f, storage);
 		search.rebuild(x, y, z, 2, cellmate::ComputeMode::seq);
 		std::vector<std::size_t> neighbors, offsets;
@@ -159,7 +159,7 @@ TEST(NeighborSearchQuery, RepeatedBoundsPreserveDistanceFiltering)
 	const std::vector<std::size_t> expected[]{ { 2, 3, 4, 5 }, { 3, 4, 5 } };
 	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
 	{
-		SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage));
+		SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage));
 		cellmate::NeighborSearch search(1.0f, storage);
 		search.rebuild(x, y, z, 8, cellmate::ComputeMode::seq);
 		std::vector<std::size_t> neighbors;
@@ -179,7 +179,7 @@ TEST(NeighborSearchQuery, ClampedQueryCellsPreserveResults)
 	const std::vector<std::size_t> expected[]{ { 0 }, { 0, 1, 2 }, {}, { 0 }, { 0, 1, 2 } };
 	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
 	{
-		SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage));
+		SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage));
 		cellmate::NeighborSearch search(1.0f, storage);
 		search.rebuild(x, y, z, 4, cellmate::ComputeMode::seq);
 		std::vector<std::size_t> neighbors, offsets;
@@ -193,7 +193,7 @@ TEST(NeighborSearchQuery, ClampedQueryCellsPreserveResults)
 		const float query_yz[5]{};
 		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
 		{
-			SCOPED_TRACE(::testing::Message() << "execution = " << static_cast<int>(execution));
+			SCOPED_TRACE(::testing::Message() << "'execution' = " << static_cast<int>(execution));
 			search.query_batch(query_x, query_yz, query_yz, 5, neighbors, offsets, execution);
 			ASSERT_EQ(offsets.size(), 6u);
 			ASSERT_EQ(offsets.back(), neighbors.size());

@@ -13,7 +13,7 @@ namespace cellmate
 		constexpr bool has_index_compaction = DistQuery::N_lanes > 1 && SIZE_MAX == UINT64_MAX;
 
 		// transposes neighbor match masks from one mask per candidate to one mask per query
-		// (writes candidate selection masks to query_masks, with one bit per candidate)
+		// (writes candidate selection masks to 'query_masks', with one bit per candidate)
 		template<std::size_t N_lanes>
 		inline void transpose_neighbor_masks(const unsigned* candidate_masks, unsigned* query_masks) noexcept
 		{
@@ -54,8 +54,8 @@ namespace cellmate
 			}
 		}
 
-		// pack indices selected by the mask into neighbors and return their count
-		// (requires N_lanes input entries and output slots)
+		// pack indices selected by the mask into 'neighbors' and return their count
+		// (requires 'DistQuery::N_lanes' input entries and output slots)
 		template<class PointEntry>
 		inline std::size_t pack_neighbor_indices(const PointEntry* point_order, unsigned mask, std::size_t* neighbors) noexcept
 		{
@@ -65,7 +65,7 @@ namespace cellmate
 			static_assert(DistQuery::N_lanes == 16, "AVX512 index compaction requires 16 lanes");
 			static_assert(std::is_standard_layout<PointEntry>::value &&
 				sizeof(PointEntry) == 16 && offsetof(PointEntry, idx) == 8,
-				"AVX512 index loads require { uint64_t key; size_t idx; } entries");
+				"AVX512 index loads require '{ uint64_t key; size_t idx; }' entries");
 
 			const unsigned first_mask = mask & 0xffu;
 			const unsigned second_mask = (mask >> 8) & 0xffu;
@@ -99,7 +99,7 @@ namespace cellmate
 			static_assert(DistQuery::N_lanes == 8, "AVX2 index compaction requires 8 lanes");
 			static_assert(std::is_standard_layout<PointEntry>::value &&
 				sizeof(PointEntry) == 16 && offsetof(PointEntry, idx) == 8,
-				"AVX2 index loads require { uint64_t key; size_t idx; } entries");
+				"AVX2 index loads require '{ uint64_t key; size_t idx; }' entries");
 
 			// shuffle both 32-bit halves of each selected index together
 			// (preserves 64-bit indices and their original order)

@@ -117,8 +117,8 @@ TEST(NeighborSearchQueryBatch, HybridGroupsPreserveRows)
 			{
 				for (cellmate::QueryOrder order : { cellmate::QueryOrder::morton, cellmate::QueryOrder::input })
 				{
-					SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage)
-						<< ", execution = " << static_cast<int>(execution) << ", query order = " << static_cast<int>(order)
+					SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
+						<< ", 'execution' = " << static_cast<int>(execution) << ", query order = " << static_cast<int>(order)
 						<< ", query count = " << N_queries);
 					search.query_batch(queries.x.data(), queries.y.data(), queries.z.data(), N_queries, neighbors, offsets,
 						execution, order);
@@ -159,7 +159,7 @@ TEST(NeighborSearchQueryBatch, DenseRowsPreserveIndicesAcrossBufferBoundaries)
 			for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
 			{
 				SCOPED_TRACE(::testing::Message() << "point count = " << N_points
-					<< ", storage = " << static_cast<int>(storage) << ", execution = " << static_cast<int>(execution));
+					<< ", 'storage' = " << static_cast<int>(storage) << ", 'execution' = " << static_cast<int>(execution));
 				search.query_batch(query_x.data(), query_y.data(), query_z.data(), query_x.size(), neighbors, offsets, execution);
 				ASSERT_EQ(offsets.size(), query_x.size() + 1);
 				std::size_t offset = 0;
@@ -219,7 +219,7 @@ TEST(NeighborSearchQueryBatch, HybridPartialMasksPreserveRowsAcrossBufferBoundar
 			for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
 			{
 				SCOPED_TRACE(::testing::Message() << "point count = " << N_points
-					<< ", storage = " << static_cast<int>(storage) << ", execution = " << static_cast<int>(execution));
+					<< ", 'storage' = " << static_cast<int>(storage) << ", 'execution' = " << static_cast<int>(execution));
 				std::vector<std::size_t> neighbors{ 99 }, offsets;
 				search.query_batch(query_x.data(), query_y.data(), query_z.data(), query_x.size(), neighbors, offsets, execution);
 				ASSERT_EQ(offsets, expected_offsets);
@@ -281,7 +281,7 @@ TEST(NeighborSearchQueryBatch, StorageModesMatchAtRoundedRadiusBoundary)
 			for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
 			{
 				SCOPED_TRACE(::testing::Message() << "point count = " << N_points
-					<< ", storage = " << static_cast<int>(storage) << ", execution = " << static_cast<int>(execution));
+					<< ", 'storage' = " << static_cast<int>(storage) << ", 'execution' = " << static_cast<int>(execution));
 				cellmate::NeighborSearch search(1.0f, storage);
 				search.rebuild(x, y, z, N_points, execution);
 				std::vector<std::size_t> neighbors, offsets;
@@ -318,8 +318,8 @@ TEST(NeighborSearchQueryBatch, StorageModesMatchWithRoundedProducts)
 	{
 		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
 		{
-			SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage)
-				<< ", execution = " << static_cast<int>(execution));
+			SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
+				<< ", 'execution' = " << static_cast<int>(execution));
 			cellmate::NeighborSearch search(1.0f, storage);
 			search.rebuild(x, y, z, 17, execution);
 			std::vector<std::size_t> neighbors, offsets;
@@ -355,8 +355,8 @@ TEST(NeighborSearchQueryBatch, BothModesPreserveInputsAndMatchBruteForce)
 	{
 		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
 		{
-			SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage)
-				<< ", execution = " << static_cast<int>(execution));
+			SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
+				<< ", 'execution' = " << static_cast<int>(execution));
 			cellmate::NeighborSearch search(1.0f, storage);
 			search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), execution);
 			ASSERT_EQ(points.x, original.x);
@@ -416,8 +416,8 @@ TEST(NeighborSearchQueryBatch, RangesPreserveTraversalOrder)
 	{
 		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
 		{
-			SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage)
-				<< ", execution = " << static_cast<int>(execution));
+			SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
+				<< ", 'execution' = " << static_cast<int>(execution));
 			cellmate::NeighborSearch search(1.0f, storage);
 			search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), execution);
 			std::vector<std::size_t> neighbors, offsets, single;
@@ -502,8 +502,8 @@ TEST(NeighborSearchQueryBatch, OverlappingBoundsPreserveTraversalOrder)
 	{
 		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
 		{
-			SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage)
-				<< ", execution = " << static_cast<int>(execution));
+			SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
+				<< ", 'execution' = " << static_cast<int>(execution));
 			cellmate::NeighborSearch search(1.0f, storage);
 			search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), execution);
 			std::vector<std::size_t> neighbors, offsets;
@@ -547,8 +547,8 @@ TEST(NeighborSearchQueryBatch, PreservesRowsAcrossWideExtents)
 		{
 			for (std::size_t N_queries : { 1u, 513u, 8193u })
 			{
-				SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage)
-					<< ", execution = " << static_cast<int>(execution) << ", query count = " << N_queries);
+				SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
+					<< ", 'execution' = " << static_cast<int>(execution) << ", query count = " << N_queries);
 				cellmate_helpers::PointCloud queries;
 				for (std::size_t i = 0; i < N_queries; i++)
 				{
@@ -598,7 +598,7 @@ TEST(NeighborSearchQueryBatch, RepeatedBatchesPreserveRows)
 				for (cellmate::ComputeMode execution : { cellmate::ComputeMode::par, cellmate::ComputeMode::seq })
 				{
 					SCOPED_TRACE(::testing::Message() << "point count = " << N_points << ", query count = " << N_queries
-						<< ", storage = " << static_cast<int>(storage) << ", execution = " << static_cast<int>(execution));
+						<< ", 'storage' = " << static_cast<int>(storage) << ", 'execution' = " << static_cast<int>(execution));
 					search.query_batch(query_x.data(), query_y.data(), query_z.data(), N_queries, neighbors, offsets, execution);
 					ASSERT_EQ(offsets.size(), N_queries + 1);
 					ASSERT_EQ(offsets.front(), 0);
@@ -650,8 +650,8 @@ TEST(NeighborSearchQueryBatch, QueryOrdersPreserveRowsAcrossRepeatedBatches)
 			{
 				for (cellmate::QueryOrder order : { cellmate::QueryOrder::input, cellmate::QueryOrder::morton, cellmate::QueryOrder::input })
 				{
-					SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage)
-						<< ", execution = " << static_cast<int>(execution) << ", query order = " << static_cast<int>(order)
+					SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
+						<< ", 'execution' = " << static_cast<int>(execution) << ", query order = " << static_cast<int>(order)
 						<< ", query count = " << N_queries);
 					search.query_batch(query_x.data(), query_y.data(), query_z.data(), N_queries, neighbors, offsets, execution, order);
 					ASSERT_EQ(offsets.size(), N_queries + 1);

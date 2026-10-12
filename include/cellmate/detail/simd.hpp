@@ -14,32 +14,32 @@
 #endif
 
 #if defined(CELLMATE_SIMD_AVX256) && !defined(__AVX2__)
-#error "cellmate::simd AVX256 requires an AVX2 compiler target"
+#error "cellmate::simd 'AVX256' requires an AVX2 compiler target"
 #endif
 
 #if defined(CELLMATE_SIMD_AVX512) && !defined(__AVX512F__)
-#error "cellmate::simd AVX512 requires an AVX512F compiler target"
+#error "cellmate::simd 'AVX512' requires an AVX512F compiler target"
 #endif
 
 #if (defined(CELLMATE_SIMD_AVX256) || defined(CELLMATE_SIMD_AVX512)) && !CELLMATE_DETAIL_HAS_FMA
-#error "cellmate::simd requires an FMA compiler target, enable -mfma on GCC/Clang"
+#error "cellmate::simd requires an FMA compiler target, enable '-mfma' on GCC/Clang"
 #endif
 
-// AUTO falls back to SCALAR when AVX2 lacks FMA, which only GCC/Clang targets can (define SCALAR to silence)
+// 'AUTO' falls back to 'SCALAR' when AVX2 lacks FMA, which only GCC/Clang targets can (define 'CELLMATE_SIMD_SCALAR' to silence)
 #if !defined(CELLMATE_SIMD_SCALAR) && !defined(CELLMATE_SIMD_AVX256) && !defined(CELLMATE_SIMD_AVX512) && defined(__AVX2__) && !CELLMATE_DETAIL_HAS_FMA
-#warning "cellmate::simd AUTO falls back to SCALAR without an FMA compiler target, enable -mfma on GCC/Clang or define CELLMATE_SIMD_SCALAR"
+#warning "cellmate::simd 'AUTO' falls back to 'SCALAR' without an FMA compiler target, enable '-mfma' on GCC/Clang or define 'CELLMATE_SIMD_SCALAR'"
 #endif
 
 #if FLT_EVAL_METHOD != 0
-#error "cellmate requires float evaluation precision (FLT_EVAL_METHOD == 0), use -mfpmath=sse on GCC x86"
+#error "cellmate requires float evaluation precision ('FLT_EVAL_METHOD' == 0), use '-mfpmath=sse' on GCC x86"
 #endif
 
 #if (defined(CELLMATE_SIMD_AVX256) || defined(CELLMATE_SIMD_AVX512)) && defined(_MSC_VER) && !defined(__clang__) && _MSC_VER < 1930 && !defined(_M_FP_STRICT)
-#error "cellmate::simd requires /fp:strict on MSVC before Visual Studio 2022, use SCALAR or enable /fp:strict"
+#error "cellmate::simd requires '/fp:strict' on MSVC before Visual Studio 2022, use 'SCALAR' or enable '/fp:strict'"
 #endif
 
-// AUTO selects AVX256 only when AVX2 and FMA are available and scalar precision and contraction controls match
-// (AVX512 is only selected when CELLMATE_SIMD_AVX512 is explicitly defined)
+// 'AUTO' selects 'AVX256' only when AVX2 and FMA are available and scalar precision and contraction controls match
+// ('AVX512' is only selected when 'CELLMATE_SIMD_AVX512' is explicitly defined)
 #if defined(CELLMATE_SIMD_AVX512)
 #define CELLMATE_DETAIL_SIMD_WIDTH 512
 #include "simd_avx512.hpp"

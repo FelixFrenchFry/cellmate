@@ -40,7 +40,7 @@ def main():
             )
 
             if backend == "AVX512" and not args.run_avx512:
-                print("AVX512 tests built. Use --run-avx512 to run them.", flush=True)
+                print("AVX512 tests built. Use '--run-avx512' to run them.", flush=True)
                 continue
 
             print(f"Running {backend} tests", flush=True)
