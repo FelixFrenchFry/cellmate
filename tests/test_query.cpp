@@ -158,6 +158,42 @@ TEST(NeighborSearchQuery, CellFaceRoundingMatchesBruteForce)
 	}
 }
 
+// verifies short point ranges with every remainder length, including ranges ending at the stored array end
+// (dense clouds keep the following stored points within the radius, so masked-off lanes must not be reported)
+TEST(NeighborSearchQuery, RangeRemaindersMatchBruteForce)
+{
+	const float radius = 1.0f;
+	const std::array<std::array<float, 3>, 4> external_queries{ {
+		{ 0.0f, 0.0f, 0.0f }, { -2.5f, -2.5f, -2.5f }, { 2.5f, 1.0f, -1.0f }, { 1.75f, -1.75f, 0.5f } } };
+	for (std::size_t N_points = 1; N_points <= 40; N_points++)
+	{
+		const uint32_t seed = 101 + static_cast<uint32_t>(N_points);
+		const cellmate_helpers::PointCloud points = cellmate_helpers::make_uniform_cloud(N_points, seed, -2.0f, 2.0f);
+		std::vector<std::array<float, 3>> queries(external_queries.begin(), external_queries.end());
+		for (std::size_t i = 0; i < N_points; i++)
+		{
+			queries.push_back({ points.x[i], points.y[i], points.z[i] });
+		}
+
+		for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+		{
+			SCOPED_TRACE(::testing::Message() << "'N_points' = " << N_points << ", 'storage' = " << static_cast<int>(storage));
+			cellmate::NeighborSearch search(radius, storage);
+			search.rebuild(points.x.data(), points.y.data(), points.z.data(), N_points, cellmate::ComputeMode::seq);
+			std::vector<std::size_t> neighbors, expected;
+			for (const std::array<float, 3>& query_pos : queries)
+			{
+				search.query(query_pos, neighbors);
+				cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(),
+					N_points, radius, query_pos, expected);
+				std::sort(neighbors.begin(), neighbors.end());
+				ASSERT_EQ(neighbors, expected) << "seed = " << seed << ", query = (" << query_pos[0] << ", "
+					<< query_pos[1] << ", " << query_pos[2] << ")";
+			}
+		}
+	}
+}
+
 // verifies distant queries remain empty when subtraction overflows in the local frame
 TEST(NeighborSearchQuery, DistantFloatQueriesHandleOverflow)
 {

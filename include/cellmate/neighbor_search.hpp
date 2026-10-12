@@ -486,6 +486,7 @@ namespace cellmate
 			std::size_t i = begin;
 			if (copied) // optional SIMD mask distance checks for contiguous positions
 			{
+				// check candidate points in full SIMD batches
 				for (; end - i >= detail::DistQuery::N_lanes; i += detail::DistQuery::N_lanes)
 				{
 					unsigned mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i);
@@ -508,10 +509,36 @@ namespace cellmate
 						}
 					}
 				}
+
+				// check remaining candidate points as one masked SIMD batch
+				// (masked lanes may read past the range end but never past the array end)
+				if (end > i && point_order_.size() - i >= detail::DistQuery::N_lanes)
+				{
+					unsigned mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i) & ((1u << (end - i)) - 1u);
+					if (mask == 0) { return; }
+					if (use_buffer)
+					{
+						N_buffered += detail::pack_neighbor_indices(point_order_.data() + i, mask, buffer + N_buffered);
+						if (N_buffered >= N_nbr_buffer_size_)
+						{
+							flush_neighbor_buffer(neighbors, buffer, N_buffered);
+						}
+					}
+					else
+					{
+						while (mask != 0)
+						{
+							const unsigned lane = detail::first_set_bit(mask);
+							neighbors.push_back(point_order_[i + lane].idx);
+							mask &= mask - 1;
+						}
+					}
+					return;
+				}
 			}
 
 			// scalar distance checks for non-contiguous positions
-			// (or for the remainder after the SIMD check loop, if available)
+			// (or for remainders too close to the array end for a full SIMD batch)
 			for (; i < end; i++)
 			{
 				const std::size_t idx = copied ? i : point_order_[i].idx;
