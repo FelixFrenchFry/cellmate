@@ -235,7 +235,7 @@ TEST(NeighborSearchQueryBatch, FixedCellNeighborhoodsPreserveRows)
 	const float x[]{ 0.0f, std::nextafter(1.0f, 0.0f), 4.0f };
 	const float y[]{ 0.0f, 0.25f, 0.25f }, z[]{ 0.0f, 0.25f, 0.25f };
 	const float positions[]{ -0.75f, 0.75f, 2.0f, 2.25f, std::nextafter(2.0f, 0.0f), 4.5f, 5.0f, 5.25f };
-	const std::vector<std::size_t> expected[]{ { 0 }, { 0, 1 }, {}, {}, { 1 }, { 2 }, { 2 }, {} };
+	const std::vector<std::size_t> expected[]{ { 0 }, { 0, 1 }, { 1 }, {}, { 1 }, { 2 }, { 2 }, {} };
 	std::vector<float> query_x(513), query_y(513, 0.25f), query_z(513, 0.25f);
 	for (std::size_t i = 0; i < query_x.size(); i++) { query_x[i] = positions[(i / 17) % 8]; }
 	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
@@ -483,10 +483,11 @@ TEST(NeighborSearchQueryBatch, OverlappingBoundsPreserveTraversalOrder)
 		cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(), points.x.size(),
 			1.0f, positions[i], expected[i]);
 		// order the oracle by cell traversal, retaining input order within each cell
+		const auto cell = [](float coordinate) { return int(std::floor(double(coordinate) / (1.0 + std::ldexp(1.0, -20)))); };
 		std::sort(expected[i].begin(), expected[i].end(), [&](std::size_t a, std::size_t b)
 		{
-			const std::array<int, 3> first{ int(points.z[a]), int(points.y[a]), int(points.x[a]) };
-			const std::array<int, 3> second{ int(points.z[b]), int(points.y[b]), int(points.x[b]) };
+			const std::array<int, 3> first{ cell(points.z[a]), cell(points.y[a]), cell(points.x[a]) };
+			const std::array<int, 3> second{ cell(points.z[b]), cell(points.y[b]), cell(points.x[b]) };
 			return first != second ? first < second : a < b;
 		});
 	}
@@ -633,7 +634,7 @@ TEST(NeighborSearchQueryBatch, QueryOrdersPreserveRowsAcrossRepeatedBatches)
 	const float x[]{ 2.0f, 0.0f, 1.0f, 0.0f, 4.0f };
 	const float y[5]{}, z[5]{};
 	const float positions[]{ 2.0f, 100.0f, 0.0f, 1.0f, -1.0f, 4.0f };
-	const std::vector<std::size_t> expected[]{ { 2, 0 }, {}, { 1, 3, 2 }, { 1, 3, 2, 0 }, { 1, 3 }, { 4 } };
+	const std::vector<std::size_t> expected[]{ { 2, 0 }, {}, { 1, 2, 3 }, { 1, 2, 3, 0 }, { 1, 3 }, { 4 } };
 	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
 	{
 		cellmate::NeighborSearch search(1.0f, storage);

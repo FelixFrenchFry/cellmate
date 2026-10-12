@@ -108,6 +108,56 @@ TEST(NeighborSearchQuery, FloatCellBoundsMatchBruteForceAcrossWideExtents)
 	}
 }
 
+// verifies cutoff neighbors near cell faces far from the grid origin
+TEST(NeighborSearchQuery, CellFaceRoundingMatchesBruteForce)
+{
+	const float origin = 5.07978821f, radius = 0.150742441f;
+	const float infinity = std::numeric_limits<float>::infinity();
+	cellmate_helpers::PointCloud points{ { origin }, { 0.0f }, { 0.0f } };
+	std::vector<float> query_x;
+	for (int cell = 1800; cell < 1880; cell++)
+	{
+		float face = origin + float(cell) * radius;
+		for (int i = 0; i < 4; i++) { face = std::nextafter(face, -infinity); }
+		for (int i = 0; i < 9; i++, face = std::nextafter(face, infinity))
+		{
+			query_x.push_back(face);
+			float point = face + radius;
+			for (int j = 0; j < 4; j++) { point = std::nextafter(point, -infinity); }
+			for (int j = 0; j < 9; j++, point = std::nextafter(point, infinity))
+			{
+				points.x.push_back(point);
+				points.y.push_back(0.0f);
+				points.z.push_back(0.0f);
+			}
+		}
+	}
+	const std::vector<float> query_yz(query_x.size(), 0.0f);
+
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage));
+		cellmate::NeighborSearch search(radius, storage);
+		search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), cellmate::ComputeMode::seq);
+		std::vector<std::size_t> neighbors, offsets, expected;
+		search.query_batch(query_x.data(), query_yz.data(), query_yz.data(), query_x.size(),
+			neighbors, offsets, cellmate::ComputeMode::seq);
+		for (std::size_t i = 0; i < query_x.size(); i++)
+		{
+			const std::array<float, 3> query_pos{ query_x[i], 0.0f, 0.0f };
+			cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(),
+				points.x.size(), radius, query_pos, expected);
+			std::vector<std::size_t> row(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
+			std::sort(row.begin(), row.end());
+			ASSERT_EQ(row, expected) << "batch query x = " << query_x[i];
+
+			search.query(query_pos, row);
+			std::sort(row.begin(), row.end());
+			ASSERT_EQ(row, expected) << "query x = " << query_x[i];
+		}
+	}
+}
+
 // verifies distant queries remain empty when subtraction overflows in the local frame
 TEST(NeighborSearchQuery, DistantFloatQueriesHandleOverflow)
 {

@@ -79,6 +79,8 @@ namespace cellmate
 			{
 				throw std::invalid_argument("'cellmate::NeighborSearch()' 'point_access' must be 'cpy' or 'ref'");
 			}
+
+			cell_width_inv_ = 1.0 / (double(radius_) * (1.0 + std::ldexp(1.0, -20))); // slightly wider than the radius to absorb rounding
 		}
 
 		// TODO: XML documentation?
@@ -271,6 +273,7 @@ namespace cellmate
 
 		float radius_;
 		float radius_squ_;
+		double cell_width_inv_; // slightly wider than the radius to absorb rounding
 		PointAccess point_access_;
 		std::array<const float*, 3> positions_{};
 		std::array<std::vector<float>, 3> copied_ordered_positions_;
@@ -377,18 +380,18 @@ namespace cellmate
 		bool query_cell_bounds(std::array<float, 3> query_pos, CellBounds& bounds) const
 		{
 			// determine query's cell relative to the grid origin
-			const float cell_x = std::floor((query_pos[0] - origin_[0]) / radius_);
-			const float cell_y = std::floor((query_pos[1] - origin_[1]) / radius_);
-			const float cell_z = std::floor((query_pos[2] - origin_[2]) / radius_);
-			if (!std::isfinite(cell_x) || !std::isfinite(cell_y) || !std::isfinite(cell_z)) { return false; }
+			// (always finite in fp64, distant queries yield empty bounds)
+			const double cell_x = unclamped_cell_coord(query_pos[0], 0);
+			const double cell_y = unclamped_cell_coord(query_pos[1], 1);
+			const double cell_z = unclamped_cell_coord(query_pos[2], 2);
 
 			// find candidate cell bounds, clamped to the extent of the grid
-			const float first_x = (std::max)(0.0f, cell_x - 1.0f);
-			const float first_y = (std::max)(0.0f, cell_y - 1.0f);
-			const float first_z = (std::max)(0.0f, cell_z - 1.0f);
-			const float last_x = (std::min)(float(last_cell_[0]), cell_x + 1.0f);
-			const float last_y = (std::min)(float(last_cell_[1]), cell_y + 1.0f);
-			const float last_z = (std::min)(float(last_cell_[2]), cell_z + 1.0f);
+			const double first_x = (std::max)(0.0, cell_x - 1.0);
+			const double first_y = (std::max)(0.0, cell_y - 1.0);
+			const double first_z = (std::max)(0.0, cell_z - 1.0);
+			const double last_x = (std::min)(double(last_cell_[0]), cell_x + 1.0);
+			const double last_y = (std::min)(double(last_cell_[1]), cell_y + 1.0);
+			const double last_z = (std::min)(double(last_cell_[2]), cell_z + 1.0);
 			if (first_x > last_x || first_y > last_y || first_z > last_z) { return false; }
 
 			bounds.first = { static_cast<uint32_t>(first_x),
@@ -1397,10 +1400,16 @@ namespace cellmate
 			return entry.idx;
 		}
 
-		// convert one position coordinate to a cell coordinate relative to the grid origin
+		// converts one position coordinate to an unclamped fp64 cell coordinate
+		double unclamped_cell_coord(float coordinate, std::size_t axis) const
+		{
+			return std::floor((double(coordinate) - double(origin_[axis])) * cell_width_inv_);
+		}
+
+		// converts one position coordinate to a cell coordinate relative to the grid origin
 		uint32_t cell_coord(float coordinate, std::size_t axis) const
 		{
-			const float cell_coordinate = std::floor((coordinate - origin_[axis]) / radius_);
+			const double cell_coordinate = unclamped_cell_coord(coordinate, axis);
 
 			if (cell_coordinate >= (1u << 21)) // TODO: disable in release builds?
 			{
@@ -1415,25 +1424,25 @@ namespace cellmate
 		uint64_t query_morton_key(std::array<float, 3> query_pos) const
 		{
 			// determine query's cell relative to the grid origin
-			const float cell_x = std::floor((query_pos[0] - origin_[0]) / radius_);
-			const float cell_y = std::floor((query_pos[1] - origin_[1]) / radius_);
-			const float cell_z = std::floor((query_pos[2] - origin_[2]) / radius_);
+			const double cell_x = unclamped_cell_coord(query_pos[0], 0);
+			const double cell_y = unclamped_cell_coord(query_pos[1], 1);
+			const double cell_z = unclamped_cell_coord(query_pos[2], 2);
 
 			// check whether query's cell is outside the grid before clamping
-			const bool outside_grid = cell_x < 0.0f || cell_x > float(last_cell_[0]) ||
-									  cell_y < 0.0f || cell_y > float(last_cell_[1]) ||
-									  cell_z < 0.0f || cell_z > float(last_cell_[2]);
+			const bool outside_grid = cell_x < 0.0 || cell_x > double(last_cell_[0]) ||
+									  cell_y < 0.0 || cell_y > double(last_cell_[1]) ||
+									  cell_z < 0.0 || cell_z > double(last_cell_[2]);
 
 			// clamp cell coordinates to the extent of the grid
-			const uint32_t cx = static_cast<uint32_t>((std::max)(0.0f, (std::min)(float(last_cell_[0]), cell_x)));
-			const uint32_t cy = static_cast<uint32_t>((std::max)(0.0f, (std::min)(float(last_cell_[1]), cell_y)));
-			const uint32_t cz = static_cast<uint32_t>((std::max)(0.0f, (std::min)(float(last_cell_[2]), cell_z)));
+			const uint32_t cx = static_cast<uint32_t>((std::max)(0.0, (std::min)(double(last_cell_[0]), cell_x)));
+			const uint32_t cy = static_cast<uint32_t>((std::max)(0.0, (std::min)(double(last_cell_[1]), cell_y)));
+			const uint32_t cz = static_cast<uint32_t>((std::max)(0.0, (std::min)(double(last_cell_[2]), cell_z)));
 
 			// combo of Morton key + outside-grid bit
 			return (morton_key(cx, cy, cz) << 1) | uint64_t(outside_grid);
 		}
 
-		// spread 21 coordinate bits into bit positions 0, 3, 6, ..., 60 of a 63-bit key
+		// spreads 21 coordinate bits into bit positions 0, 3, 6, ..., 60 of a 63-bit key
 		static uint64_t spread_bits(uint32_t value)
 		{
 #if CELLMATE_DETAIL_HAS_BMI2
@@ -1451,7 +1460,7 @@ namespace cellmate
 #endif
 		}
 
-		// interleave three 21-bit coordinates into a single 63-bit Morton key
+		// interleaves three 21-bit coordinates into a single 63-bit Morton key
 		static uint64_t morton_key(uint32_t x, uint32_t y, uint32_t z)
 		{
 			// 'x' occupies bit positions: 0, 3, 6, ..., 60
