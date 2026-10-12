@@ -226,6 +226,72 @@ TEST(NeighborSearchQueryBatch, HybridPartialMasksPreserveRowsAcrossBufferBoundar
 	}
 }
 
+// verifies full query groups across range remainder lengths, including at the array end
+// (the next range's points lie within the radius, so remainders must not cross into it)
+TEST(NeighborSearchQueryBatch, GroupRangeRemaindersPreserveRows)
+{
+	constexpr std::size_t N_lanes = cellmate::detail::DistQuery::N_lanes;
+	// all queries share cell (0, 0, 0), so Morton batches form full groups with SIMD
+	std::vector<float> query_x(4 * N_lanes + 1), query_y(4 * N_lanes + 1), query_z(4 * N_lanes + 1);
+	for (std::size_t i = 0; i < query_x.size(); i++)
+	{
+		query_x[i] = 0.1f + 0.8f * float(i % 7) / 7.0f;
+		query_y[i] = 0.1f + 0.8f * float((i * 3) % 5) / 5.0f;
+		query_z[i] = 0.1f + 0.8f * float((i * 5) % 11) / 11.0f;
+	}
+	for (std::size_t N_first = 1; N_first <= 2 * N_lanes; N_first++)
+	{
+		for (bool far_cell : { false, true })
+		{
+			// fill cells (0, 0, 0) and (0, 1, 0) but not (1, 0, 0), so both cells form separate ranges
+			// (the first point fixes the grid origin, the far cell moves the array end past both)
+			const std::size_t N_second = N_first + N_lanes;
+			cellmate_helpers::PointCloud points{ { 0.0f }, { 0.0f }, { 0.0f } };
+			for (std::size_t i = 1; i < N_first + N_second; i++)
+			{
+				points.x.push_back(0.1f + 0.8f * float((i * 5) % 13) / 13.0f);
+				points.y.push_back((i < N_first ? 0.1f : 1.1f) + 0.8f * float((i * 7) % 11) / 11.0f);
+				points.z.push_back(0.1f + 0.8f * float((i * 3) % 7) / 7.0f);
+			}
+			if (far_cell)
+			{
+				for (std::size_t i = 0; i < N_lanes; i++)
+				{
+					points.x.push_back(4.5f);
+					points.y.push_back(4.5f);
+					points.z.push_back(4.5f);
+				}
+			}
+
+			for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+			{
+				cellmate::NeighborSearch search(1.0f, storage);
+				search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), cellmate::ComputeMode::seq);
+				for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+				{
+					SCOPED_TRACE(::testing::Message() << "first cell points = " << N_first << ", far cell = " << far_cell
+						<< ", 'storage' = " << static_cast<int>(storage) << ", 'execution' = " << static_cast<int>(execution));
+					std::vector<std::size_t> neighbors{ 99 }, offsets, single, expected;
+					search.query_batch(query_x.data(), query_y.data(), query_z.data(), query_x.size(), neighbors, offsets, execution);
+					ASSERT_EQ(offsets.size(), query_x.size() + 1);
+					ASSERT_EQ(offsets.back(), neighbors.size());
+					for (std::size_t i = 0; i < query_x.size(); i++)
+					{
+						// compare traversal order with single queries and neighbor sets with brute force
+						search.query({ query_x[i], query_y[i], query_z[i] }, single);
+						ASSERT_EQ(offsets[i + 1] - offsets[i], single.size());
+						ASSERT_TRUE(std::equal(single.begin(), single.end(), neighbors.begin() + offsets[i]));
+						cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(), points.x.size(), 1.0f,
+							{ query_x[i], query_y[i], query_z[i] }, expected);
+						std::sort(single.begin(), single.end());
+						ASSERT_EQ(single, expected);
+					}
+				}
+			}
+		}
+	}
+}
+
 // verifies fixed cell neighborhoods, including outside queries sharing clamped sorting cells
 TEST(NeighborSearchQueryBatch, FixedCellNeighborhoodsPreserveRows)
 {
