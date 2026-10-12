@@ -39,10 +39,10 @@ namespace cellmate
 				const __m512 dx = _mm512_sub_ps(x_, _mm512_loadu_ps(px));
 				const __m512 dy = _mm512_sub_ps(y_, _mm512_loadu_ps(py));
 				const __m512 dz = _mm512_sub_ps(z_, _mm512_loadu_ps(pz));
-				// preserve the scalar predicate's fused operation order
-				__m512 dist_squ = _mm512_mul_ps(dx, dx);
-				dist_squ = _mm512_fmadd_ps(dy, dy, dist_squ);
-				dist_squ = _mm512_fmadd_ps(dz, dz, dist_squ);
+				// (omitting FMA to match rounding precision of the scalar version, despite potential accuracy gains)
+				const __m512 dist_squ = _mm512_add_ps(_mm512_add_ps(_mm512_mul_ps(dx, dx),
+																		_mm512_mul_ps(dy, dy)),
+																		_mm512_mul_ps(dz, dz));
 				return static_cast<unsigned>(_mm512_cmp_ps_mask(dist_squ, radius_squ_, _CMP_LE_OQ));
 			}
 		};
@@ -67,10 +67,10 @@ namespace cellmate
 				const __m512 dx = _mm512_sub_ps(x_, _mm512_set1_ps(px));
 				const __m512 dy = _mm512_sub_ps(y_, _mm512_set1_ps(py));
 				const __m512 dz = _mm512_sub_ps(z_, _mm512_set1_ps(pz));
-				// preserve the scalar predicate's fused operation order
-				__m512 dist_squ = _mm512_mul_ps(dx, dx);
-				dist_squ = _mm512_fmadd_ps(dy, dy, dist_squ);
-				dist_squ = _mm512_fmadd_ps(dz, dz, dist_squ);
+				// (omitting FMA to match rounding precision of the scalar version, despite potential accuracy gains)
+				const __m512 dist_squ = _mm512_add_ps(_mm512_add_ps(_mm512_mul_ps(dx, dx),
+																		_mm512_mul_ps(dy, dy)),
+																		_mm512_mul_ps(dz, dz));
 				return static_cast<unsigned>(_mm512_cmp_ps_mask(dist_squ, radius_squ_, _CMP_LE_OQ));
 			}
 		};

@@ -46,6 +46,7 @@ TEST(NeighborSearchQueryBatch, QueryGroupsPreserveRoundedCutoffs)
 			x[lane] = std::ldexp(1.0f, -6);
 			y[lane] = 7 * std::ldexp(1.0f, -15);
 			z[lane] = 1.0f;
+			second_mask |= 1u << lane;
 		}
 	}
 	const cellmate::detail::DistQueryGroup dist_queries(x.data(), y.data(), z.data(), 1.0f);
@@ -200,16 +201,12 @@ TEST(NeighborSearchQueryBatch, HybridPartialMasksPreserveRowsAcrossBufferBoundar
 			y[i] = float((i * 7) % 16) / 16.0f;
 			z[i] = float((i * 11) % 16) / 16.0f;
 		}
-		std::vector<std::size_t> expected, expected_offsets{ 0 };
+		std::vector<std::size_t> expected, expected_offsets{ 0 }, oracle;
 		for (std::size_t query = 0; query < query_x.size(); query++)
 		{
-			for (std::size_t i = 0; i < N_points; i++)
-			{
-				const float dx = x[i] - query_x[query];
-				const float dy = y[i] - query_y[query];
-				const float dz = z[i] - query_z[query];
-				if (std::fma(dz, dz, std::fma(dy, dy, dx * dx)) <= 1.0f) { expected.push_back(i); }
-			}
+			cellmate_helpers::brute_force(x.data(), y.data(), z.data(), N_points, 1.0f,
+				{ query_x[query], query_y[query], query_z[query] }, oracle);
+			expected.insert(expected.end(), oracle.begin(), oracle.end());
 			expected_offsets.push_back(expected.size());
 		}
 		for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
@@ -302,7 +299,7 @@ TEST(NeighborSearchQueryBatch, StorageModesMatchAtRoundedRadiusBoundary)
 	}
 }
 
-// verifies the fused z square rounds the distance above the inclusive cutoff
+// verifies consistent cutoff rounding when squared distances require rounding
 // (covers complete SIMD blocks and a scalar tail, using known expected neighbors)
 TEST(NeighborSearchQueryBatch, StorageModesMatchWithRoundedProducts)
 {
@@ -313,7 +310,8 @@ TEST(NeighborSearchQueryBatch, StorageModesMatchWithRoundedProducts)
 	std::fill_n(z, 17, std::ldexp(one, -13));
 	const std::array<float, 3> query_pos{ std::ldexp(one, -6), 7 * std::ldexp(one, -15), one };
 	const std::vector<float> query_x(513, query_pos[0]), query_y(513, query_pos[1]), query_z(513, query_pos[2]);
-	const std::vector<std::size_t> expected;
+	std::vector<std::size_t> expected(17);
+	for (std::size_t i = 0; i < expected.size(); i++) { expected[i] = i; }
 	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
 	{
 		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
@@ -321,7 +319,7 @@ TEST(NeighborSearchQueryBatch, StorageModesMatchWithRoundedProducts)
 			SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
 				<< ", 'execution' = " << static_cast<int>(execution));
 			cellmate::NeighborSearch search(1.0f, storage);
-			search.rebuild(x, y, z, 17, execution);
+			search.rebuild(x, y, z, expected.size(), execution);
 			std::vector<std::size_t> neighbors, offsets;
 			search.query(query_pos, neighbors);
 			ASSERT_EQ(neighbors, expected);

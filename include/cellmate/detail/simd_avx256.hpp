@@ -39,10 +39,10 @@ namespace cellmate
 				const __m256 dx = _mm256_sub_ps(x_, _mm256_loadu_ps(px));
 				const __m256 dy = _mm256_sub_ps(y_, _mm256_loadu_ps(py));
 				const __m256 dz = _mm256_sub_ps(z_, _mm256_loadu_ps(pz));
-				// preserve the scalar predicate's fused operation order
-				__m256 dist_squ = _mm256_mul_ps(dx, dx);
-				dist_squ = _mm256_fmadd_ps(dy, dy, dist_squ);
-				dist_squ = _mm256_fmadd_ps(dz, dz, dist_squ);
+				// (omitting FMA to match rounding precision of the scalar version, despite potential accuracy gains)
+				const __m256 dist_squ = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(dx, dx),
+																		_mm256_mul_ps(dy, dy)),
+																		_mm256_mul_ps(dz, dz));
 				return static_cast<unsigned>(_mm256_movemask_ps(_mm256_cmp_ps(dist_squ, radius_squ_, _CMP_LE_OQ)));
 			}
 		};
@@ -67,10 +67,10 @@ namespace cellmate
 				const __m256 dx = _mm256_sub_ps(x_, _mm256_set1_ps(px));
 				const __m256 dy = _mm256_sub_ps(y_, _mm256_set1_ps(py));
 				const __m256 dz = _mm256_sub_ps(z_, _mm256_set1_ps(pz));
-				// preserve the scalar predicate's fused operation order
-				__m256 dist_squ = _mm256_mul_ps(dx, dx);
-				dist_squ = _mm256_fmadd_ps(dy, dy, dist_squ);
-				dist_squ = _mm256_fmadd_ps(dz, dz, dist_squ);
+				// (omitting FMA to match rounding precision of the scalar version, despite potential accuracy gains)
+				const __m256 dist_squ = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(dx, dx),
+																		_mm256_mul_ps(dy, dy)),
+																		_mm256_mul_ps(dz, dz));
 				return static_cast<unsigned>(_mm256_movemask_ps(_mm256_cmp_ps(dist_squ, radius_squ_, _CMP_LE_OQ)));
 			}
 		};

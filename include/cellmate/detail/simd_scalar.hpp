@@ -2,13 +2,8 @@
 
 #include <array>
 #include <cstddef>
-#include <cmath>
 
 #include "fp_control.hpp"
-
-#if CELLMATE_DETAIL_HAS_FMA
-#include <immintrin.h>
-#endif
 
 CELLMATE_DETAIL_FP_BEGIN
 
@@ -34,17 +29,7 @@ namespace cellmate
 				const float dx = query_pos_[0] - x;
 				const float dy = query_pos_[1] - y;
 				const float dz = query_pos_[2] - z;
-				float dist_squ = dx * dx;
-#if CELLMATE_DETAIL_HAS_FMA
-				__m128 dist_squ_simd = _mm_set_ss(dist_squ);
-				dist_squ_simd = _mm_fmadd_ss(_mm_set_ss(dy), _mm_set_ss(dy), dist_squ_simd);
-				dist_squ_simd = _mm_fmadd_ss(_mm_set_ss(dz), _mm_set_ss(dz), dist_squ_simd);
-				dist_squ = _mm_cvtss_f32(dist_squ_simd);
-#else
-				dist_squ = std::fma(dy, dy, dist_squ);
-				dist_squ = std::fma(dz, dz, dist_squ);
-#endif
-				return dist_squ <= radius_squ_;
+				return dx * dx + dy * dy + dz * dz <= radius_squ_;
 			}
 
 			unsigned neighbor_mask(const float* x, const float* y, const float* z) const noexcept

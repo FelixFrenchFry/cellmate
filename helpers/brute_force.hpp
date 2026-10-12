@@ -2,7 +2,6 @@
 
 #include <array>
 #include <cstddef>
-#include <cmath>
 #include <vector>
 
 #include "../include/cellmate/detail/fp_control.hpp"
@@ -27,7 +26,7 @@ namespace cellmate_helpers
 			const float dy = query_pos[1] - y[i];
 			const float dz = query_pos[2] - z[i];
 			
-			if (std::fma(dz, dz, std::fma(dy, dy, dx * dx)) <= radius_squ)
+			if (dx * dx + dy * dy + dz * dz <= radius_squ)
 			{
 				neighbors.push_back(i);
 			}

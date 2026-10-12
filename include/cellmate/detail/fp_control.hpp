@@ -1,13 +1,5 @@
 #pragma once
 
-// detect x86 FMA in the compiler target, without runtime CPU detection
-// (MSVC includes FMA in AVX2/AVX512 targets, while GCC and Clang expose '__FMA__')
-#if defined(__FMA__) || (defined(_MSC_VER) && !defined(__clang__) && (defined(__AVX2__) || defined(__AVX512F__)))
-#define CELLMATE_DETAIL_HAS_FMA 1
-#else
-#define CELLMATE_DETAIL_HAS_FMA 0
-#endif
-
 // keep rounding controls local to cellmate implementation headers
 // (leave consumer exception and floating-point environment settings unchanged)
 #if defined(__clang__)
@@ -27,7 +19,7 @@
 	_Pragma("GCC optimize (\"fp-contract=off\")")
 #define CELLMATE_DETAIL_FP_END _Pragma("GCC pop_options")
 #else
-// older MSVC requires caller-selected '/fp:strict' for SIMD
+// older MSVC requires caller-selected '/fp:strict' for AVX2 targets
 // (its 'float_control' stack does not save and restore contraction settings)
 #define CELLMATE_DETAIL_FP_BEGIN
 #define CELLMATE_DETAIL_FP_END
