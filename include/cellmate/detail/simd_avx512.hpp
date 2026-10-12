@@ -33,18 +33,45 @@ namespace cellmate
 			}
 
 			// callers must provide 16 valid floats per array
-			// (cell starts not required to be aligned)
 			unsigned neighbor_mask(const float* px, const float* py, const float* pz) const noexcept
 			{
 				CELLMATE_DETAIL_FP_NO_CONTRACT
 				const __m512 dx = _mm512_sub_ps(x_, _mm512_loadu_ps(px));
 				const __m512 dy = _mm512_sub_ps(y_, _mm512_loadu_ps(py));
 				const __m512 dz = _mm512_sub_ps(z_, _mm512_loadu_ps(pz));
-				// (omitting FMA to match rounding precision of the scalar version, despite potential accuracy gains)
-				const __m512 distance_squ = _mm512_add_ps(_mm512_add_ps(_mm512_mul_ps(dx, dx),
-																		_mm512_mul_ps(dy, dy)),
-																		_mm512_mul_ps(dz, dz));
-				return static_cast<unsigned>(_mm512_cmp_ps_mask(distance_squ, radius_squ_, _CMP_LE_OQ));
+				// preserve the scalar predicate's fused operation order
+				__m512 dist_squ = _mm512_mul_ps(dx, dx);
+				dist_squ = _mm512_fmadd_ps(dy, dy, dist_squ);
+				dist_squ = _mm512_fmadd_ps(dz, dz, dist_squ);
+				return static_cast<unsigned>(_mm512_cmp_ps_mask(dist_squ, radius_squ_, _CMP_LE_OQ));
+			}
+		};
+
+		// load contiguous 16 query positions once, then broadcast one candidate per call
+		struct DistQueryGroupAVX512
+		{
+			static constexpr std::size_t N_lanes = 16;
+			__m512 x_, y_, z_, radius_squ_;
+
+			// callers must provide 16 valid floats per array
+			DistQueryGroupAVX512(const float* x, const float* y, const float* z, float radius_squ) noexcept
+				: x_(_mm512_loadu_ps(x)),
+				y_(_mm512_loadu_ps(y)),
+				z_(_mm512_loadu_ps(z)),
+				radius_squ_(_mm512_set1_ps(radius_squ))
+			{}
+
+			unsigned neighbor_mask(float px, float py, float pz) const noexcept
+			{
+				CELLMATE_DETAIL_FP_NO_CONTRACT
+				const __m512 dx = _mm512_sub_ps(x_, _mm512_set1_ps(px));
+				const __m512 dy = _mm512_sub_ps(y_, _mm512_set1_ps(py));
+				const __m512 dz = _mm512_sub_ps(z_, _mm512_set1_ps(pz));
+				// preserve the scalar predicate's fused operation order
+				__m512 dist_squ = _mm512_mul_ps(dx, dx);
+				dist_squ = _mm512_fmadd_ps(dy, dy, dist_squ);
+				dist_squ = _mm512_fmadd_ps(dz, dz, dist_squ);
+				return static_cast<unsigned>(_mm512_cmp_ps_mask(dist_squ, radius_squ_, _CMP_LE_OQ));
 			}
 		};
 	}

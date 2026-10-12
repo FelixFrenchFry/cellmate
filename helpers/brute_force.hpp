@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cmath>
 #include <vector>
 
 #include "../include/cellmate/detail/fp_control.hpp"
@@ -17,7 +18,7 @@ namespace cellmate_helpers
 	{
 		CELLMATE_DETAIL_FP_NO_CONTRACT
 		neighbors.clear();
-		const float radius_sq = radius * radius;
+		const float radius_squ = radius * radius;
 
 		// check every point, including self and points on the cutoff
 		for (std::size_t i = 0; i < N_points; i++)
@@ -26,7 +27,7 @@ namespace cellmate_helpers
 			const float dy = query_pos[1] - y[i];
 			const float dz = query_pos[2] - z[i];
 			
-			if (dx * dx + dy * dy + dz * dz <= radius_sq)
+			if (std::fma(dz, dz, std::fma(dy, dy, dx * dx)) <= radius_squ)
 			{
 				neighbors.push_back(i);
 			}

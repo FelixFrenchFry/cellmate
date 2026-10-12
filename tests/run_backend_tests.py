@@ -1,4 +1,4 @@
-"""Build scalar/AVX256/AVX512 tests, run first two by default, needs AVX2 x86/x64, CMake, and a C++ compiler"""
+"""Build scalar/AVX256/AVX512 tests, run first two by default, needs AVX2/FMA x86/x64, CMake, and a C++ compiler"""
 import argparse
 from pathlib import Path
 import subprocess
@@ -16,8 +16,8 @@ def main():
     executable_name = "cellmate_tests.exe" if windows else "cellmate_tests"
     backends = [
         ("SCALAR", ""),
-        ("AVX256", "/arch:AVX2" if windows else "-mavx2"),
-        ("AVX512", "/arch:AVX512" if windows else "-mavx512f"),
+        ("AVX256", "/arch:AVX2" if windows else "-mavx2;-mfma"),
+        ("AVX512", "/arch:AVX512" if windows else "-mavx512f;-mfma"),
     ]
 
     def run(*command):

@@ -22,6 +22,249 @@ static_assert(cellmate::detail::DistQuery::N_lanes == 8, "AVX256 tests must use 
 static_assert(cellmate::detail::DistQuery::N_lanes == 16, "AVX512 tests must use the AVX512 backend");
 #endif
 
+// verifies query-lane masks and the same float cutoff rounding as single-query filtering
+TEST(NeighborSearchQueryBatch, QueryGroupsPreserveRoundedCutoffs)
+{
+	constexpr std::size_t N_lanes = cellmate::detail::DistQuery::N_lanes;
+	std::array<float, N_lanes> x{}, y{}, z{};
+	unsigned first_mask = 0, second_mask = 0;
+	for (std::size_t lane = 0; lane < N_lanes; lane++)
+	{
+		if (lane % 3 == 0)
+		{
+			x[lane] = 1.0f;
+			y[lane] = std::ldexp(1.0f, -13);
+			first_mask |= 1u << lane;
+			second_mask |= 1u << lane;
+		}
+		else if (lane % 3 == 1)
+		{
+			x[lane] = std::nextafter(1.0f, 2.0f);
+		}
+		else
+		{
+			x[lane] = std::ldexp(1.0f, -6);
+			y[lane] = 7 * std::ldexp(1.0f, -15);
+			z[lane] = 1.0f;
+		}
+	}
+	const cellmate::detail::DistQueryGroup dist_queries(x.data(), y.data(), z.data(), 1.0f);
+	EXPECT_EQ(dist_queries.neighbor_mask(0.0f, 0.0f, 0.0f), first_mask);
+	EXPECT_EQ(dist_queries.neighbor_mask(0.0f, 0.0f, std::ldexp(1.0f, -13)), second_mask);
+	EXPECT_EQ(dist_queries.neighbor_mask(10.0f, 10.0f, 10.0f), 0u);
+}
+
+// verifies full query groups, fallback rows, and positions on cell boundaries
+// (covers row and neighbor order, both storage modes, and uneven parallel chunks)
+TEST(NeighborSearchQueryBatch, HybridGroupsPreserveRows)
+{
+	cellmate_helpers::PointCloud points{ { 0.0f, 5.0f }, { 0.0f, 5.0f }, { 0.0f, 5.0f } };
+	for (int z = 4; z >= 0; z--)
+	{
+		for (int y = 4; y >= 0; y--)
+		{
+			for (int x = 4; x >= 0; x--)
+			{
+				points.x.push_back(float(x) + 0.25f);
+				points.y.push_back(float(y) + 0.5f);
+				points.z.push_back(float(z) + 0.75f);
+			}
+		}
+	}
+	std::vector<std::array<float, 3>> positions;
+	for (std::size_t i = 0; i < 33; i++)
+	{
+		positions.push_back({ 2.25f + float(i % 8) / 16, 2.5f, 2.5f });
+	}
+	positions.push_back({ 2.0f, 2.0f, 2.0f });
+	for (std::size_t i = 0; i < 17; i++)
+	{
+		positions.push_back({ 2.75f, 2.25f + float(i % 8) / 16, 2.5f });
+	}
+	const float far = (std::numeric_limits<float>::max)();
+	const std::array<float, 3> remaining[]{
+		{ -far, 0.0f, 0.0f }, { -0.5f, 0.0f, 0.0f }, { 0.25f, 0.5f, 0.75f },
+		{ 1.25f, 0.5f, 0.75f }, { 4.25f, 4.5f, 4.75f }, { far, far, far }, { 5.0f, 5.0f, 5.0f }
+	};
+	positions.insert(positions.end(), std::begin(remaining), std::end(remaining));
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		cellmate::NeighborSearch search(1.0f, storage);
+		search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), cellmate::ComputeMode::seq);
+		std::vector<std::vector<std::size_t>> expected(positions.size());
+		std::vector<std::size_t> oracle;
+		for (std::size_t i = 0; i < positions.size(); i++)
+		{
+			search.query(positions[i], expected[i]);
+			cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(), points.x.size(),
+				1.0f, positions[i], oracle);
+			auto row = expected[i];
+			std::sort(row.begin(), row.end());
+			ASSERT_EQ(row, oracle);
+		}
+		std::vector<std::size_t> neighbors, offsets;
+		for (std::size_t N_queries : { 7u, 8u, 9u, 15u, 16u, 17u, 33u, 513u, 1031u, 8u })
+		{
+			cellmate_helpers::PointCloud queries;
+			for (std::size_t i = 0; i < N_queries; i++)
+			{
+				const auto& position = positions[i % positions.size()];
+				queries.x.push_back(position[0]);
+				queries.y.push_back(position[1]);
+				queries.z.push_back(position[2]);
+			}
+			for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+			{
+				for (cellmate::QueryOrder order : { cellmate::QueryOrder::morton, cellmate::QueryOrder::input })
+				{
+					SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage)
+						<< ", execution = " << static_cast<int>(execution) << ", query order = " << static_cast<int>(order)
+						<< ", query count = " << N_queries);
+					search.query_batch(queries.x.data(), queries.y.data(), queries.z.data(), N_queries, neighbors, offsets,
+						execution, order);
+					ASSERT_EQ(offsets.size(), N_queries + 1);
+					ASSERT_EQ(offsets.front(), 0);
+					ASSERT_EQ(offsets.back(), neighbors.size());
+					for (std::size_t i = 0; i < N_queries; i++)
+					{
+						ASSERT_LE(offsets[i], offsets[i + 1]);
+						ASSERT_LE(offsets[i + 1], neighbors.size());
+						const std::vector<std::size_t> row(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
+						ASSERT_EQ(row, expected[i % positions.size()]) << "query index = " << i;
+					}
+				}
+			}
+		}
+	}
+}
+
+// verifies queries and batch rows keep their indices around buffer and SIMD boundaries
+TEST(NeighborSearchQueryBatch, DenseRowsPreserveIndicesAcrossBufferBoundaries)
+{
+	std::vector<float> query_x(513), query_y(513, 0.0f), query_z(513, 0.0f);
+	for (std::size_t i = 0; i < query_x.size(); i++) { query_x[i] = i % 2 == 0 ? 0.0f : 10.0f; }
+	for (std::size_t N_points : { 0u, 1u, 3u, 4u, 7u, 8u, 15u, 16u, 17u, 31u, 32u, 33u,
+		60u, 63u, 64u, 65u, 66u, 67u, 71u, 79u, 127u, 128u, 129u, 257u })
+	{
+		const std::vector<float> coordinates(N_points, 0.0f);
+		std::vector<std::size_t> expected(N_points);
+		for (std::size_t i = 0; i < N_points; i++) { expected[i] = i; }
+		for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+		{
+			cellmate::NeighborSearch search(1.0f, storage);
+			search.rebuild(coordinates.data(), coordinates.data(), coordinates.data(), N_points, cellmate::ComputeMode::seq);
+			std::vector<std::size_t> neighbors{ 99 }, offsets;
+			search.query({ 0.0f, 0.0f, 0.0f }, neighbors);
+			ASSERT_EQ(neighbors, expected);
+			for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+			{
+				SCOPED_TRACE(::testing::Message() << "point count = " << N_points
+					<< ", storage = " << static_cast<int>(storage) << ", execution = " << static_cast<int>(execution));
+				search.query_batch(query_x.data(), query_y.data(), query_z.data(), query_x.size(), neighbors, offsets, execution);
+				ASSERT_EQ(offsets.size(), query_x.size() + 1);
+				std::size_t offset = 0;
+				for (std::size_t i = 0; i < query_x.size(); i++)
+				{
+					ASSERT_EQ(offsets[i], offset);
+					if (i % 2 == 0)
+					{
+						offset += N_points;
+						ASSERT_LE(offset, neighbors.size());
+						ASSERT_TRUE(std::equal(expected.begin(), expected.end(), neighbors.begin() + offsets[i]));
+					}
+					ASSERT_EQ(offsets[i + 1], offset);
+				}
+				ASSERT_EQ(neighbors.size(), offset);
+			}
+		}
+	}
+}
+
+// verifies different query masks share tiles without mixing rows or losing buffered indices
+TEST(NeighborSearchQueryBatch, HybridPartialMasksPreserveRowsAcrossBufferBoundaries)
+{
+	std::vector<float> query_x(513), query_y(513), query_z(513);
+	for (std::size_t i = 0; i < query_x.size(); i++)
+	{
+		query_x[i] = float(i % 16) / 16.0f + 0.03125f;
+		query_y[i] = float((i * 3) % 16) / 16.0f + 0.03125f;
+		query_z[i] = float((i * 7) % 16) / 16.0f + 0.03125f;
+	}
+	for (std::size_t N_points : { 65u, 71u, 79u, 129u, 257u })
+	{
+		// all points and queries share one cell, so point indices are already in traversal order
+		std::vector<float> x(N_points), y(N_points), z(N_points);
+		for (std::size_t i = 0; i < N_points; i++)
+		{
+			x[i] = float((i * 5) % 16) / 16.0f;
+			y[i] = float((i * 7) % 16) / 16.0f;
+			z[i] = float((i * 11) % 16) / 16.0f;
+		}
+		std::vector<std::size_t> expected, expected_offsets{ 0 };
+		for (std::size_t query = 0; query < query_x.size(); query++)
+		{
+			for (std::size_t i = 0; i < N_points; i++)
+			{
+				const float dx = x[i] - query_x[query];
+				const float dy = y[i] - query_y[query];
+				const float dz = z[i] - query_z[query];
+				if (std::fma(dz, dz, std::fma(dy, dy, dx * dx)) <= 1.0f) { expected.push_back(i); }
+			}
+			expected_offsets.push_back(expected.size());
+		}
+		for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+		{
+			cellmate::NeighborSearch search(1.0f, storage);
+			search.rebuild(x.data(), y.data(), z.data(), N_points, cellmate::ComputeMode::seq);
+			for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+			{
+				SCOPED_TRACE(::testing::Message() << "point count = " << N_points
+					<< ", storage = " << static_cast<int>(storage) << ", execution = " << static_cast<int>(execution));
+				std::vector<std::size_t> neighbors{ 99 }, offsets;
+				search.query_batch(query_x.data(), query_y.data(), query_z.data(), query_x.size(), neighbors, offsets, execution);
+				ASSERT_EQ(offsets, expected_offsets);
+				ASSERT_EQ(neighbors, expected);
+			}
+		}
+	}
+}
+
+// verifies fixed cell neighborhoods, including outside queries sharing clamped sorting cells
+TEST(NeighborSearchQueryBatch, FixedCellNeighborhoodsPreserveRows)
+{
+	const float x[]{ 0.0f, std::nextafter(1.0f, 0.0f), 4.0f };
+	const float y[]{ 0.0f, 0.25f, 0.25f }, z[]{ 0.0f, 0.25f, 0.25f };
+	const float positions[]{ -0.75f, 0.75f, 2.0f, 2.25f, std::nextafter(2.0f, 0.0f), 4.5f, 5.0f, 5.25f };
+	const std::vector<std::size_t> expected[]{ { 0 }, { 0, 1 }, {}, {}, { 1 }, { 2 }, { 2 }, {} };
+	std::vector<float> query_x(513), query_y(513, 0.25f), query_z(513, 0.25f);
+	for (std::size_t i = 0; i < query_x.size(); i++) { query_x[i] = positions[(i / 17) % 8]; }
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		cellmate::NeighborSearch search(1.0f, storage);
+		search.rebuild(x, y, z, 3, cellmate::ComputeMode::seq);
+		std::vector<std::size_t> neighbors, offsets;
+		for (std::size_t i = 0; i < 8; i++)
+		{
+			search.query({ positions[i], 0.25f, 0.25f }, neighbors);
+			ASSERT_EQ(neighbors, expected[i]) << "query index = " << i;
+		}
+		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+		{
+			for (cellmate::QueryOrder order : { cellmate::QueryOrder::morton, cellmate::QueryOrder::input })
+			{
+				search.query_batch(query_x.data(), query_y.data(), query_z.data(), query_x.size(), neighbors, offsets, execution, order);
+				ASSERT_EQ(offsets.size(), query_x.size() + 1);
+				ASSERT_EQ(offsets.back(), neighbors.size());
+				for (std::size_t i = 0; i < query_x.size(); i++)
+				{
+					const std::vector<std::size_t> row(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
+					ASSERT_EQ(row, expected[(i / 17) % 8]) << "query index = " << i;
+				}
+			}
+		}
+	}
+}
+
 // verifies consistent cutoff rounding across scalar tails and complete SIMD blocks
 // (covers both storage modes and batch execution)
 TEST(NeighborSearchQueryBatch, StorageModesMatchAtRoundedRadiusBoundary)
@@ -59,7 +302,7 @@ TEST(NeighborSearchQueryBatch, StorageModesMatchAtRoundedRadiusBoundary)
 	}
 }
 
-// verifies consistent cutoff rounding when squared distances require rounding
+// verifies the fused z square rounds the distance above the inclusive cutoff
 // (covers complete SIMD blocks and a scalar tail, using known expected neighbors)
 TEST(NeighborSearchQueryBatch, StorageModesMatchWithRoundedProducts)
 {
@@ -70,8 +313,7 @@ TEST(NeighborSearchQueryBatch, StorageModesMatchWithRoundedProducts)
 	std::fill_n(z, 17, std::ldexp(one, -13));
 	const std::array<float, 3> query_pos{ std::ldexp(one, -6), 7 * std::ldexp(one, -15), one };
 	const std::vector<float> query_x(513, query_pos[0]), query_y(513, query_pos[1]), query_z(513, query_pos[2]);
-	std::vector<std::size_t> expected(17);
-	for (std::size_t i = 0; i < expected.size(); i++) { expected[i] = i; }
+	const std::vector<std::size_t> expected;
 	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
 	{
 		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
@@ -79,7 +321,7 @@ TEST(NeighborSearchQueryBatch, StorageModesMatchWithRoundedProducts)
 			SCOPED_TRACE(::testing::Message() << "storage = " << static_cast<int>(storage)
 				<< ", execution = " << static_cast<int>(execution));
 			cellmate::NeighborSearch search(1.0f, storage);
-			search.rebuild(x, y, z, expected.size(), execution);
+			search.rebuild(x, y, z, 17, execution);
 			std::vector<std::size_t> neighbors, offsets;
 			search.query(query_pos, neighbors);
 			ASSERT_EQ(neighbors, expected);

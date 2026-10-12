@@ -217,7 +217,7 @@ namespace cellmate
 
 	private:
 
-		// cell coordinates of all candidate cells considered by one query
+		// bounding box in cell coordinates
 		struct CellBounds
 		{
 			std::array<uint32_t, 3> first;
@@ -248,6 +248,8 @@ namespace cellmate
 			CellBounds cell_bounds_{};
 			std::vector<PointRange> point_ranges_;
 			bool point_ranges_valid_ = false;
+			// per-lane batch rows, retaining capacity without input or output pointers
+			std::array<std::vector<std::size_t>, detail::DistQueryGroup::N_lanes> query_neighbors_;
 		};
 
 		// TODO: go without struct?
@@ -292,6 +294,8 @@ namespace cellmate
 		// key shift to directory range, 64 flags directory as unused
 		uint32_t cell_prefix_shift_ = 64;
 
+		static constexpr std::size_t N_nbr_buffer_size_ = 64;
+
 		std::shared_ptr<const QueryContext::BuildId> build_id_;
 
 		// reusable query context of the calling thread, synchronized with the current build
@@ -313,34 +317,51 @@ namespace cellmate
 			return context;
 		}
 
-		static constexpr std::size_t N_neighbor_buffer = 64;
-
 		// append neighbors of one query position without clearing the output
 		void append_neighbors(std::array<float, 3> query_pos, QueryContext& context, std::vector<std::size_t>& neighbors) const
 		{
 			CellBounds bounds;
 			if (!query_cell_bounds(query_pos, bounds)) { return; }
 			gather_query_ranges(bounds, context);
+			if (point_access_ == PointAccess::cpy)
+			{
+				find_neighbors_from_ranges<true>(query_pos, context, neighbors);
+			}
+			else
+			{
+				find_neighbors_from_ranges<false>(query_pos, context, neighbors);
+			}
+		}
 
-			// resolve position storage without retaining pointers into the vectors
-			const bool copied = point_access_ == PointAccess::cpy;
+		// finds neighbors for one query using candidate ranges and SIMD across candidates
+		// (appends matching point IDs to neighbors, preserving existing entries)
+		template<bool copied>
+		void find_neighbors_from_ranges(std::array<float, 3> query_pos, const QueryContext& context,
+			std::vector<std::size_t>& neighbors) const
+		{
+			// select candidate coordinates
 			const std::array<const float*, 3> positions = copied
-				? std::array<const float*, 3>{ copied_ordered_positions_[0].data(), copied_ordered_positions_[1].data(), copied_ordered_positions_[2].data() }
+				? std::array<const float*, 3>{ copied_ordered_positions_[0].data(),
+											   copied_ordered_positions_[1].data(),
+											   copied_ordered_positions_[2].data() }
 				: positions_;
 
 			const detail::DistQuery dist_query(query_pos, radius_squ_);
-			// allow a full-width store when one group crosses the flush threshold
-			std::size_t buffer[N_neighbor_buffer + detail::DistQuery::N_lanes - 1];
+			// allow a full-width store when a candidate SIMD batch crosses the flush threshold
+			std::size_t buffer[N_nbr_buffer_size_ + detail::DistQuery::N_lanes - 1];
 			std::size_t N_buffered = 0;
 
+			// check candidates in each range using the same query and buffer
 			for (const QueryContext::PointRange& range : context.point_ranges_)
 			{
-				append_range_neighbors(range.begin, range.end, positions, copied, dist_query, neighbors, buffer, N_buffered);
+				append_range_neighbors<copied>(range.begin, range.end, positions, dist_query, neighbors, buffer, N_buffered);
 			}
+
+			// flush remaining buffered IDs into the result list
 			flush_neighbor_buffer(neighbors, buffer, N_buffered);
 		}
 
-		// move buffered neighbor indices to the output
+		// moves buffered neighbor indices into the output
 		static void flush_neighbor_buffer(
 			std::vector<std::size_t>& neighbors,
 			const std::size_t* buffer,
@@ -351,28 +372,23 @@ namespace cellmate
 			N_buffered = 0;
 		}
 
-		// compute generous query bounds, returning false when they miss the grid
+		// computes the inclusive bounding box of candidate cells for a query, clamped to the grid
+		// (returns false when none of the candidate cells are within the grid)
 		bool query_cell_bounds(std::array<float, 3> query_pos, CellBounds& bounds) const
 		{
-			// query position relative to the grid in cell units
-			const float center_x = (query_pos[0] - origin_[0]) / radius_;
-			const float center_y = (query_pos[1] - origin_[1]) / radius_;
-			const float center_z = (query_pos[2] - origin_[2]) / radius_;
-			if (!std::isfinite(center_x) || !std::isfinite(center_y) || !std::isfinite(center_z)) { return false; }
+			// determine query's cell relative to the grid origin
+			const float cell_x = std::floor((query_pos[0] - origin_[0]) / radius_);
+			const float cell_y = std::floor((query_pos[1] - origin_[1]) / radius_);
+			const float cell_z = std::floor((query_pos[2] - origin_[2]) / radius_);
+			if (!std::isfinite(cell_x) || !std::isfinite(cell_y) || !std::isfinite(cell_z)) { return false; }
 
-			// expand cell bounds to account for fp rounding
-			// (covers cell assignment and cutoff rounding without changing the distance predicate)
-			const float margin_x = 8 * std::numeric_limits<float>::epsilon() * (std::abs(center_x) + 1.0f);
-			const float margin_y = 8 * std::numeric_limits<float>::epsilon() * (std::abs(center_y) + 1.0f);
-			const float margin_z = 8 * std::numeric_limits<float>::epsilon() * (std::abs(center_z) + 1.0f);
-
-			// find candidate cell bounds, clipped to the extent of the grid
-			const float first_x = (std::max)(0.0f, std::floor(center_x - 1.0f - margin_x));
-			const float first_y = (std::max)(0.0f, std::floor(center_y - 1.0f - margin_y));
-			const float first_z = (std::max)(0.0f, std::floor(center_z - 1.0f - margin_z));
-			const float last_x = (std::min)(float(last_cell_[0]), std::floor(center_x + 1.0f + margin_x));
-			const float last_y = (std::min)(float(last_cell_[1]), std::floor(center_y + 1.0f + margin_y));
-			const float last_z = (std::min)(float(last_cell_[2]), std::floor(center_z + 1.0f + margin_z));
+			// find candidate cell bounds, clamped to the extent of the grid
+			const float first_x = (std::max)(0.0f, cell_x - 1.0f);
+			const float first_y = (std::max)(0.0f, cell_y - 1.0f);
+			const float first_z = (std::max)(0.0f, cell_z - 1.0f);
+			const float last_x = (std::min)(float(last_cell_[0]), cell_x + 1.0f);
+			const float last_y = (std::min)(float(last_cell_[1]), cell_y + 1.0f);
+			const float last_z = (std::min)(float(last_cell_[2]), cell_z + 1.0f);
 			if (first_x > last_x || first_y > last_y || first_z > last_z) { return false; }
 
 			bounds.first = { static_cast<uint32_t>(first_x),
@@ -384,14 +400,17 @@ namespace cellmate
 			return true;
 		}
 
-		// collect occupied point ranges in traversal order, reusing identical bounds
+		static bool same_cell_bounds(const CellBounds& bounds, const CellBounds& other) noexcept
+		{
+			return bounds.first == other.first && bounds.last == other.last;
+		}
+
+		// collects occupied point ranges in traversal order, reusing identical bounds
 		// TODO: instead of gathering query ranges, store cell indices explicitly and reuse subsets of it for nearby queries?
 		void gather_query_ranges(const CellBounds& bounds, QueryContext& context) const
 		{
 			// reuse previous ranges if bounds are identical
-			if (context.point_ranges_valid_ &&
-				context.cell_bounds_.first == bounds.first &&
-				context.cell_bounds_.last == bounds.last)
+			if (context.point_ranges_valid_ && same_cell_bounds(context.cell_bounds_, bounds))
 			{
 				return;
 			}
@@ -400,10 +419,9 @@ namespace cellmate
 			context.point_ranges_.clear();
 
 			// spread x and y bits once instead of per row and per cell
-			// (8 slots cover the float rounding margin across 21-bit cell extents)
-			assert(bounds.last[0] - bounds.first[0] < 8 && bounds.last[1] - bounds.first[1] < 8);
-			std::array<uint64_t, 8> x_codes{};
-			std::array<uint64_t, 8> y_codes{};
+			assert(bounds.last[0] - bounds.first[0] < 3 && bounds.last[1] - bounds.first[1] < 3);
+			std::array<uint64_t, 3> x_codes{};
+			std::array<uint64_t, 3> y_codes{};
 			for (uint32_t x = bounds.first[0]; x <= bounds.last[0]; x++)
 			{
 				x_codes[x - bounds.first[0]] = spread_bits(x);
@@ -453,14 +471,14 @@ namespace cellmate
 			context.point_ranges_valid_ = true;
 		}
 
-		// collect original indices of points within the search radius
+		// collects original indices of points within the search radius
 		// (filtering one point range, preserving output order of the original indices)
-		// buffer and count are shared by all ranges of one query
+		template<bool copied>
 		void append_range_neighbors(std::size_t begin, std::size_t end, const std::array<const float*, 3>& positions,
-			bool copied, const detail::DistQuery& dist_query, std::vector<std::size_t>& neighbors,
+			const detail::DistQuery& dist_query, std::vector<std::size_t>& neighbors,
 			std::size_t* buffer, std::size_t& N_buffered) const
 		{
-			const bool use_buffer = copied && detail::has_index_compaction;
+			constexpr bool use_buffer = copied && detail::has_index_compaction;
 
 			std::size_t i = begin;
 			if (copied) // optional SIMD mask distance checks for contiguous positions
@@ -472,7 +490,7 @@ namespace cellmate
 					if (use_buffer)
 					{
 						N_buffered += detail::pack_neighbor_indices(point_order_.data() + i, mask, buffer + N_buffered);
-						if (N_buffered >= N_neighbor_buffer)
+						if (N_buffered >= N_nbr_buffer_size_)
 						{
 							flush_neighbor_buffer(neighbors, buffer, N_buffered);
 						}
@@ -499,7 +517,7 @@ namespace cellmate
 					if (use_buffer)
 					{
 						buffer[N_buffered++] = point_order_[i].idx;
-						if (N_buffered >= N_neighbor_buffer)
+						if (N_buffered >= N_nbr_buffer_size_)
 						{
 							flush_neighbor_buffer(neighbors, buffer, N_buffered);
 						}
@@ -509,6 +527,200 @@ namespace cellmate
 						neighbors.push_back(point_order_[i].idx);
 					}
 				}
+			}
+		}
+
+		// finds neighbors for a full query group using shared candidate ranges and SIMD across queries
+		// (stores a separate neighbor list for each query in context.query_neighbors_)
+		template<bool copied>
+		void find_group_neighbors_from_ranges(const detail::DistQueryGroup& dist_queries, QueryContext& context) const
+		{
+			// prepare separate result lists and select candidate coordinates
+			for (std::vector<std::size_t>& row : context.query_neighbors_)
+			{
+				row.clear();
+			}
+			const std::array<const float*, 3> positions = copied
+				? std::array<const float*, 3>{ copied_ordered_positions_[0].data(),
+											   copied_ordered_positions_[1].data(),
+											   copied_ordered_positions_[2].data() }
+				: positions_;
+
+			const std::size_t N_lanes = detail::DistQueryGroup::N_lanes;
+			static_assert(N_lanes == detail::DistQuery::N_lanes, "query tiles must match index compaction width");
+			// allow a full-width store when one tile crosses a query's buffer flush threshold
+			// TODO: use persistent scratch buffers instead?
+			std::size_t buffers[N_lanes][N_nbr_buffer_size_ + N_lanes - 1];
+			std::size_t N_buffered[N_lanes]{};
+
+			// check each candidate point against all queries in the group
+			for (const QueryContext::PointRange& range : context.point_ranges_)
+			{
+				// process candidates as tiles of N_lanes queries and N_lanes candidates
+				// (pack batch of N_lanes neighbors into a query's list at once, instead of individually)
+				std::size_t i = range.begin;
+				for (; range.end - i >= N_lanes; i += N_lanes)
+				{
+					// compute one neighbor match mask per candidate
+					unsigned candidate_masks[N_lanes];
+					unsigned any_mask = 0;
+					for (std::size_t candidate = 0; candidate < N_lanes; candidate++)
+					{
+						const std::size_t position_idx = copied ? i + candidate : point_order_[i + candidate].idx;
+						const unsigned mask = dist_queries.neighbor_mask(positions[0][position_idx],
+																		 positions[1][position_idx],
+																		 positions[2][position_idx]);
+						candidate_masks[candidate] = mask;
+						any_mask |= mask;
+					}
+					if (any_mask == 0) { continue; }
+
+					// transpose masks and pack matching IDs for each query
+					// (from candidate-major to query-major order to make matches of each query contiguous)
+					unsigned query_masks[N_lanes];
+					detail::transpose_neighbor_masks<N_lanes>(candidate_masks, query_masks);
+					for (std::size_t query = 0; query < N_lanes; query++)
+					{
+						if (query_masks[query] == 0) { continue; }
+						N_buffered[query] += detail::pack_neighbor_indices(
+							point_order_.data() + i, query_masks[query], buffers[query] + N_buffered[query]);
+						if (N_buffered[query] >= N_nbr_buffer_size_) // flush buffer into result list when full
+						{
+							flush_neighbor_buffer(context.query_neighbors_[query], buffers[query], N_buffered[query]);
+						}
+					}
+				}
+
+				// process leftover candidates without tiling
+				for (; i < range.end; i++)
+				{
+					const std::size_t position_idx = copied ? i : point_order_[i].idx;
+					unsigned mask = dist_queries.neighbor_mask(positions[0][position_idx],
+															   positions[1][position_idx],
+															   positions[2][position_idx]);
+					if (mask == 0) { continue; }
+
+					// append candidate ID to each matching query's buffer
+					const std::size_t idx = point_order_[i].idx;
+					while (mask != 0)
+					{
+						const unsigned query = detail::first_set_bit(mask);
+						buffers[query][N_buffered[query]++] = idx;
+						if (N_buffered[query] >= N_nbr_buffer_size_) // flush buffer into result list when full
+						{
+							flush_neighbor_buffer(context.query_neighbors_[query], buffers[query], N_buffered[query]);
+						}
+						mask &= mask - 1;
+					}
+				}
+			}
+
+			// flush remaining buffered IDs into each query's result list
+			for (std::size_t query = 0; query < N_lanes; query++)
+			{
+				flush_neighbor_buffer(context.query_neighbors_[query], buffers[query], N_buffered[query]);
+			}
+		}
+
+		// finds groups of queries in the range that share the same candidate cell bounds and process
+		// them either in a group or individually, decision based on group size to SIMD width ratio
+		// (appends neighbor lists to buffer, storing each count in offsets at its original query index)
+		void query_batch_morton_range(const float* x, const float* y, const float* z,
+			const std::vector<PointEntry>& query_order, std::size_t begin, std::size_t end,
+			QueryContext& context, std::vector<std::size_t>& buffer, std::vector<std::size_t>& offsets) const
+		{
+			const std::size_t N_lanes = detail::DistQueryGroup::N_lanes;
+			std::size_t i = begin;
+			while (i < end)
+			{
+				// get candidate cell bounds for current query
+				const std::size_t idx = query_order[i].idx;
+				CellBounds bounds;
+				if (!query_cell_bounds({ x[idx], y[idx], z[idx] }, bounds))
+				{
+					offsets[idx] = 0;
+					i++;
+					continue;
+				}
+
+				// gather candidate point ranges within the candidate cell bounds
+				gather_query_ranges(bounds, context);
+
+				// start a group with the current query
+				float query_x[N_lanes], query_y[N_lanes], query_z[N_lanes];
+				query_x[0] = x[idx];
+				query_y[0] = y[idx];
+				query_z[0] = z[idx];
+				std::size_t N_group_size = 1;
+
+				// collect consecutive queries with the same candidate cell bounds
+				// (stops at a different key, the SIMD width, or the end of the chunk)
+				while ((query_order[i].key & 1u) == 0 && N_group_size < N_lanes && N_group_size < end - i)
+				{
+					const PointEntry& entry = query_order[i + N_group_size];
+					if (entry.key != query_order[i].key) { break; }
+					query_x[N_group_size] = x[entry.idx];
+					query_y[N_group_size] = y[entry.idx];
+					query_z[N_group_size] = z[entry.idx];
+					N_group_size++;
+				}
+
+				// process a full group's queries togehter with SIMD across queries, or
+				// process a non-full group's queries individually with SIMD across candidates
+				if (N_lanes > 1 && N_group_size == N_lanes) // full group
+				{
+					const detail::DistQueryGroup dist_queries(query_x, query_y, query_z, radius_squ_);
+					if (point_access_ == PointAccess::cpy)
+					{
+						find_group_neighbors_from_ranges<true>(dist_queries, context);
+					}
+					else
+					{
+						find_group_neighbors_from_ranges<false>(dist_queries, context);
+					}
+
+					for (std::size_t k = 0; k < N_group_size; k++)
+					{
+						const std::vector<std::size_t>& row = context.query_neighbors_[k];
+						buffer.insert(buffer.end(), row.begin(), row.end());
+						offsets[query_order[i + k].idx] = row.size();
+					}
+				}
+				else // non-full group
+				{
+					for (std::size_t k = 0; k < N_group_size; k++)
+					{
+						const std::size_t start = buffer.size();
+						if (point_access_ == PointAccess::cpy)
+						{
+							find_neighbors_from_ranges<true>({ query_x[k], query_y[k], query_z[k] }, context, buffer);
+						}
+						else
+						{
+							find_neighbors_from_ranges<false>({ query_x[k], query_y[k], query_z[k] }, context, buffer);
+						}
+						offsets[query_order[i + k].idx] = buffer.size() - start;
+					}
+				}
+				i += N_group_size;
+			}
+		}
+
+		// restores neighbor lists collected in Morton order to the original query order
+		// (copies each query's IDs from buffer into neighbors at its output offset)
+		static void restore_query_results_order(const std::vector<PointEntry>& query_order, std::size_t begin, std::size_t end,
+			const std::vector<std::size_t>& buffer, const std::vector<std::size_t>& offsets,
+			std::vector<std::size_t>& neighbors)
+		{
+			std::size_t source_offset = 0;
+			for (std::size_t i = begin; i < end; i++)
+			{
+				const std::size_t idx = query_order[i].idx;
+				const std::size_t count = offsets[idx + 1] - offsets[idx];
+				if (count == 0) { continue; }
+				// copy IDs to the query's output position
+				std::copy_n(buffer.begin() + source_offset, count, neighbors.begin() + offsets[idx]);
+				source_offset += count;
 			}
 		}
 
@@ -537,29 +749,19 @@ namespace cellmate
 			std::vector<PointEntry>& query_order = scratch.query_order_;
 			for (std::size_t i = 0; i < N_queries; i++)
 			{
-				const uint32_t cx = query_cell_coord(x[i], 0);
-				const uint32_t cy = query_cell_coord(y[i], 1);
-				const uint32_t cz = query_cell_coord(z[i], 2);
-				query_order[i] = { morton_key(cx, cy, cz), i };
+				query_order[i] = { query_morton_key({ x[i], y[i], z[i] }), i };
 			}
 
 			// sort query indices by Morton key
 			sort_point_order_seq(query_order, scratch.query_order_scratch_,
-				morton_key(last_cell_[0], last_cell_[1], last_cell_[2]));
+				(morton_key(last_cell_[0], last_cell_[1], last_cell_[2]) << 1) | 1u);
 
 			if (scratch.chunk_neighbors_.empty()) { scratch.chunk_neighbors_.resize(1); }
 			std::vector<std::size_t>& buffer = scratch.chunk_neighbors_[0];
 			buffer.clear();
 			QueryContext& context = thread_context();
 
-			// collect neighbors in Morton order, storing counts at original query indices
-			for (std::size_t i = 0; i < N_queries; i++)
-			{
-				const std::size_t idx = query_order[i].idx;
-				const std::size_t start = buffer.size();
-				append_neighbors({ x[idx], y[idx], z[idx] }, context, buffer);
-				offsets[idx] = buffer.size() - start;
-			}
+			query_batch_morton_range(x, y, z, query_order, 0, N_queries, context, buffer, offsets);
 
 			// convert counts into output positions in the caller's original query order
 			// (their sum is already bounded by the size of the single neighbor buffer)
@@ -574,16 +776,7 @@ namespace cellmate
 			neighbors.resize(N_neighbors);
 			if (N_neighbors == 0) { return; }
 
-			// read rows in collection order and restore their original output positions
-			std::size_t source_offset = 0;
-			for (std::size_t i = 0; i < N_queries; i++)
-			{
-				const std::size_t idx = query_order[i].idx;
-				const std::size_t count = offsets[idx + 1] - offsets[idx];
-				if (count == 0) { continue; }
-				std::copy_n(buffer.begin() + source_offset, count, neighbors.begin() + offsets[idx]);
-				source_offset += count;
-			}
+			restore_query_results_order(query_order, 0, N_queries, buffer, offsets, neighbors);
 		}
 
 #ifdef _OPENMP
@@ -602,14 +795,11 @@ namespace cellmate
 				#pragma omp parallel for schedule(static) num_threads(N_threads)
 				for (std::ptrdiff_t i = 0; i < N_queries; i++)
 				{
-					const uint32_t cx = query_cell_coord(x[i], 0);
-					const uint32_t cy = query_cell_coord(y[i], 1);
-					const uint32_t cz = query_cell_coord(z[i], 2);
-					query_order[i] = { morton_key(cx, cy, cz), static_cast<std::size_t>(i) };
+					query_order[i] = { query_morton_key({ x[i], y[i], z[i] }), static_cast<std::size_t>(i) };
 				}
 
 				// sort query indices by Morton key
-				const uint64_t max_key = morton_key(last_cell_[0], last_cell_[1], last_cell_[2]);
+				const uint64_t max_key = (morton_key(last_cell_[0], last_cell_[1], last_cell_[2]) << 1) | 1u;
 				const int N_sort_threads = select_thread_count(query_order.size(), ComputeMode::par, 4096);
 				if (N_sort_threads > 1)
 				{
@@ -643,13 +833,8 @@ namespace cellmate
 					buffer.clear();
 					if (order == QueryOrder::morton)
 					{
-						for (std::ptrdiff_t i = begin; i < end; i++)
-						{
-							const std::size_t idx = query_order[i].idx;
-							const std::size_t start = buffer.size();
-							append_neighbors({ x[idx], y[idx], z[idx] }, context, buffer);
-							offsets[idx] = buffer.size() - start;
-						}
+						query_batch_morton_range(x, y, z, query_order, static_cast<std::size_t>(begin),
+							static_cast<std::size_t>(end), context, buffer, offsets);
 					}
 					else
 					{
@@ -698,16 +883,8 @@ namespace cellmate
 				const std::vector<std::size_t>& buffer = chunk_neighbors[chunk];
 				if (order == QueryOrder::morton)
 				{
-					// read rows in the same order they were appended to this buffer
-					std::size_t source_offset = 0;
-					for (std::ptrdiff_t i = begin; i < end; i++)
-					{
-						const std::size_t idx = query_order[i].idx;
-						const std::size_t count = offsets[idx + 1] - offsets[idx];
-						if (count == 0) { continue; }
-						std::copy_n(buffer.begin() + source_offset, count, neighbors.begin() + offsets[idx]);
-						source_offset += count;
-					}
+					restore_query_results_order(query_order, static_cast<std::size_t>(begin), static_cast<std::size_t>(end),
+						buffer, offsets, neighbors);
 				}
 				else
 				{
@@ -886,7 +1063,7 @@ namespace cellmate
 			if (N_points < 2 || max_key == 0) { return; }
 
 			// determine how many bytes to sort
-			// (1 to 8 radix passes needed for 63-bit Morton keys)
+			// (1 to 8 radix passes needed for point and query keys)
 			uint32_t N_passes = 0;
 			for (uint64_t key = max_key; key != 0; key >>= 8)
 			{
@@ -1052,7 +1229,7 @@ namespace cellmate
 			if (N_points < 2 || max_key == 0) { return; }
 
 			// determine how many bytes to sort
-			// (1 to 8 radix passes needed for 63-bit Morton keys)
+			// (1 to 8 radix passes needed for point and query keys)
 			uint32_t N_passes = 0;
 			for (uint64_t key = max_key; key != 0; key >>= 8)
 			{
@@ -1233,14 +1410,27 @@ namespace cellmate
 			return static_cast<uint32_t>(cell_coordinate);
 		}
 
-		// convert one query position coordinate to a cell coordinate clamped to the grid extent
-		// (clamp only the sorting key, distance checks still use the original position)
-		uint32_t query_cell_coord(float coordinate, std::size_t axis) const
+		// computes the Morton sorting key for a query, clamped to the grid
+		// (uses the low bit to mark if query's cell is outside the grid: 0 = inside, 1 = outside)
+		uint64_t query_morton_key(std::array<float, 3> query_pos) const
 		{
-			const float cell_coordinate = std::floor((coordinate - origin_[axis]) / radius_);
-			const float cell_coordinate_clamped = (std::max)(0.0f, (std::min)(float(last_cell_[axis]), cell_coordinate));
-	
-			return static_cast<uint32_t>(cell_coordinate_clamped);
+			// determine query's cell relative to the grid origin
+			const float cell_x = std::floor((query_pos[0] - origin_[0]) / radius_);
+			const float cell_y = std::floor((query_pos[1] - origin_[1]) / radius_);
+			const float cell_z = std::floor((query_pos[2] - origin_[2]) / radius_);
+
+			// check whether query's cell is outside the grid before clamping
+			const bool outside_grid = cell_x < 0.0f || cell_x > float(last_cell_[0]) ||
+									  cell_y < 0.0f || cell_y > float(last_cell_[1]) ||
+									  cell_z < 0.0f || cell_z > float(last_cell_[2]);
+
+			// clamp cell coordinates to the extent of the grid
+			const uint32_t cx = static_cast<uint32_t>((std::max)(0.0f, (std::min)(float(last_cell_[0]), cell_x)));
+			const uint32_t cy = static_cast<uint32_t>((std::max)(0.0f, (std::min)(float(last_cell_[1]), cell_y)));
+			const uint32_t cz = static_cast<uint32_t>((std::max)(0.0f, (std::min)(float(last_cell_[2]), cell_z)));
+
+			// combo of Morton key + outside-grid bit
+			return (morton_key(cx, cy, cz) << 1) | uint64_t(outside_grid);
 		}
 
 		// spread 21 coordinate bits into bit positions 0, 3, 6, ..., 60 of a 63-bit key

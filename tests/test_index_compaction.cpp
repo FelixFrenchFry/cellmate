@@ -34,6 +34,50 @@ namespace
 		PointEntry{ 55, static_cast<std::size_t>(0xf00007fffull) },
 		PointEntry{ 44, static_cast<std::size_t>(0x100000ffffull) }
 	};
+
+	template<std::size_t N_lanes>
+	void verify_query_mask_transpose()
+	{
+		unsigned candidate_masks[N_lanes]{}, query_masks[N_lanes];
+		for (std::size_t candidate = 0; candidate < N_lanes; candidate++)
+		{
+			for (std::size_t query = 0; query < N_lanes; query++)
+			{
+				SCOPED_TRACE(::testing::Message() << "lanes = " << N_lanes
+					<< ", candidate = " << candidate << ", query = " << query);
+				candidate_masks[candidate] = 1u << query;
+				cellmate::detail::transpose_neighbor_masks<N_lanes>(candidate_masks, query_masks);
+				for (std::size_t lane = 0; lane < N_lanes; lane++)
+				{
+					ASSERT_EQ(query_masks[lane], lane == query ? 1u << candidate : 0u);
+				}
+				candidate_masks[candidate] = 0;
+			}
+		}
+
+		for (std::size_t candidate = 0; candidate < N_lanes; candidate++)
+		{
+			candidate_masks[candidate] = (0xa53cu >> (candidate % 5)) & ((1u << N_lanes) - 1);
+		}
+		cellmate::detail::transpose_neighbor_masks<N_lanes>(candidate_masks, query_masks);
+		for (std::size_t query = 0; query < N_lanes; query++)
+		{
+			unsigned expected = 0;
+			for (std::size_t candidate = 0; candidate < N_lanes; candidate++)
+			{
+				if ((candidate_masks[candidate] & (1u << query)) != 0) { expected |= 1u << candidate; }
+			}
+			ASSERT_EQ(query_masks[query], expected);
+		}
+	}
+}
+
+// verifies both SIMD widths, including the upper query and candidate lanes, on every backend
+TEST(NeighborIndexCompaction, QueryMasksPreserveQueryAndCandidateLanes)
+{
+	verify_query_mask_transpose<1>();
+	verify_query_mask_transpose<8>();
+	verify_query_mask_transpose<16>();
 }
 
 // verifies every mask preserves full indices and lane order without writing past the output slots
@@ -101,48 +145,6 @@ TEST(NeighborSearchQuery, PartialMasksPreserveIndicesAcrossBufferBoundaries)
 					ASSERT_TRUE(std::equal(expected.begin(), expected.end(), neighbors.begin()));
 					ASSERT_TRUE(std::equal(expected.begin(), expected.end(), neighbors.begin() + expected.size()));
 				}
-			}
-		}
-	}
-}
-
-// verifies queries and batch rows keep their indices around buffer and SIMD boundaries
-TEST(NeighborSearchQueryBatch, DenseRowsPreserveIndicesAcrossBufferBoundaries)
-{
-	std::vector<float> query_x(513), query_y(513, 0.0f), query_z(513, 0.0f);
-	for (std::size_t i = 0; i < query_x.size(); i++) { query_x[i] = i % 2 == 0 ? 0.0f : 10.0f; }
-	for (std::size_t N_points : { 0u, 1u, 3u, 4u, 7u, 8u, 15u, 16u, 17u, 31u, 32u, 33u,
-		60u, 63u, 64u, 65u, 66u, 67u, 71u, 79u, 127u, 128u, 129u, 257u })
-	{
-		const std::vector<float> coordinates(N_points, 0.0f);
-		std::vector<std::size_t> expected(N_points);
-		for (std::size_t i = 0; i < N_points; i++) { expected[i] = i; }
-		for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
-		{
-			cellmate::NeighborSearch search(1.0f, storage);
-			search.rebuild(coordinates.data(), coordinates.data(), coordinates.data(), N_points, cellmate::ComputeMode::seq);
-			std::vector<std::size_t> neighbors{ 99 }, offsets;
-			search.query({ 0.0f, 0.0f, 0.0f }, neighbors);
-			ASSERT_EQ(neighbors, expected);
-			for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
-			{
-				SCOPED_TRACE(::testing::Message() << "point count = " << N_points
-					<< ", storage = " << static_cast<int>(storage) << ", execution = " << static_cast<int>(execution));
-				search.query_batch(query_x.data(), query_y.data(), query_z.data(), query_x.size(), neighbors, offsets, execution);
-				ASSERT_EQ(offsets.size(), query_x.size() + 1);
-				std::size_t offset = 0;
-				for (std::size_t i = 0; i < query_x.size(); i++)
-				{
-					ASSERT_EQ(offsets[i], offset);
-					if (i % 2 == 0)
-					{
-						offset += N_points;
-						ASSERT_LE(offset, neighbors.size());
-						ASSERT_TRUE(std::equal(expected.begin(), expected.end(), neighbors.begin() + offsets[i]));
-					}
-					ASSERT_EQ(offsets[i + 1], offset);
-				}
-				ASSERT_EQ(neighbors.size(), offset);
 			}
 		}
 	}

@@ -12,6 +12,48 @@ namespace cellmate
 	{
 		constexpr bool has_index_compaction = DistQuery::N_lanes > 1 && SIZE_MAX == UINT64_MAX;
 
+		// transposes neighbor match masks from one mask per candidate to one mask per query
+		// (writes candidate selection masks to query_masks, with one bit per candidate)
+		template<std::size_t N_lanes>
+		inline void transpose_neighbor_masks(const unsigned* candidate_masks, unsigned* query_masks) noexcept
+		{
+			static_assert(N_lanes == 1 || N_lanes == 8 || N_lanes == 16, "unsupported query mask width");
+			const std::size_t N_block_lanes = N_lanes < 8 ? N_lanes : 8;
+			for (std::size_t lane = 0; lane < N_lanes; lane++)
+			{
+				query_masks[lane] = 0;
+			}
+
+			// transpose 1 block of 8x8 bits for 8-lane version, or 4 blocks of 8x8 bits for 16-lane version
+			// TODO: extract each query's candidate mask directly in case of AVX512?
+			for (std::size_t first_query = 0; first_query < N_lanes; first_query += 8)
+			{
+				for (std::size_t first_candidate = 0; first_candidate < N_lanes; first_candidate += 8)
+				{
+					// store candidate masks as rows of an 8x8 bit block
+					uint64_t bits = 0;
+					for (std::size_t candidate = 0; candidate < N_block_lanes; candidate++)
+					{
+						bits |= static_cast<uint64_t>((candidate_masks[first_candidate + candidate] >> first_query) & 0xffu) << (candidate * 8);
+					}
+
+					// transpose the bit block by swapping bits across its diagonal
+					uint64_t swapped = (bits ^ (bits >> 7)) & UINT64_C(0x00aa00aa00aa00aa);
+					bits ^= swapped ^ (swapped << 7);
+					swapped = (bits ^ (bits >> 14)) & UINT64_C(0x0000cccc0000cccc);
+					bits ^= swapped ^ (swapped << 14);
+					swapped = (bits ^ (bits >> 28)) & UINT64_C(0x00000000f0f0f0f0);
+					bits ^= swapped ^ (swapped << 28);
+					
+					// merge each transposed row into its query's candidate mask
+					for (std::size_t query = 0; query < N_block_lanes; query++)
+					{
+						query_masks[first_query + query] |= static_cast<unsigned>((bits >> (query * 8)) & 0xffu) << first_candidate;
+					}
+				}
+			}
+		}
+
 		// pack indices selected by the mask into neighbors and return their count
 		// (requires N_lanes input entries and output slots)
 		template<class PointEntry>
