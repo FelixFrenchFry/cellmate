@@ -101,6 +101,7 @@ namespace cellmate
 				copied_ordered_positions_[0].clear();
 				copied_ordered_positions_[1].clear();
 				copied_ordered_positions_[2].clear();
+				copied_ordered_indices_.clear();
 				return;
 			}
 			if (!x || !y || !z)
@@ -277,6 +278,7 @@ namespace cellmate
 		PointAccess point_access_;
 		std::array<const float*, 3> positions_{};
 		std::array<std::vector<float>, 3> copied_ordered_positions_;
+		std::vector<std::size_t> copied_ordered_indices_;
 		std::array<float, 3> origin_{};
 		std::array<uint32_t, 3> last_cell_{};
 		std::vector<PointEntry> point_order_;
@@ -490,10 +492,9 @@ namespace cellmate
 				for (; end - i >= detail::DistQuery::N_lanes; i += detail::DistQuery::N_lanes)
 				{
 					unsigned mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i);
-					if (mask == 0) { continue; }
 					if (use_buffer)
 					{
-						N_buffered += detail::pack_neighbor_indices(point_order_.data() + i, mask, buffer + N_buffered);
+						N_buffered += detail::pack_contiguous_indices(copied_ordered_indices_.data() + i, mask, buffer + N_buffered);
 						if (N_buffered >= N_nbr_buffer_size_)
 						{
 							flush_neighbor_buffer(neighbors, buffer, N_buffered);
@@ -515,10 +516,9 @@ namespace cellmate
 				if (end > i && point_order_.size() - i >= detail::DistQuery::N_lanes)
 				{
 					unsigned mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i) & ((1u << (end - i)) - 1u);
-					if (mask == 0) { return; }
 					if (use_buffer)
 					{
-						N_buffered += detail::pack_neighbor_indices(point_order_.data() + i, mask, buffer + N_buffered);
+						N_buffered += detail::pack_contiguous_indices(copied_ordered_indices_.data() + i, mask, buffer + N_buffered);
 						if (N_buffered >= N_nbr_buffer_size_)
 						{
 							flush_neighbor_buffer(neighbors, buffer, N_buffered);
@@ -612,8 +612,9 @@ namespace cellmate
 					for (std::size_t query = 0; query < N_lanes; query++)
 					{
 						if (query_masks[query] == 0) { continue; }
-						N_buffered[query] += detail::pack_neighbor_indices(
-							point_order_.data() + i, query_masks[query], buffers[query] + N_buffered[query]);
+						N_buffered[query] += copied
+							? detail::pack_contiguous_indices(copied_ordered_indices_.data() + i, query_masks[query], buffers[query] + N_buffered[query])
+							: detail::pack_neighbor_indices(point_order_.data() + i, query_masks[query], buffers[query] + N_buffered[query]);
 						if (N_buffered[query] >= N_nbr_buffer_size_) // flush buffer into result list when full
 						{
 							flush_neighbor_buffer(context.query_neighbors_[query], buffers[query], N_buffered[query]);
@@ -931,6 +932,7 @@ namespace cellmate
 			copied_ordered_positions_[0].resize(N_points);
 			copied_ordered_positions_[1].resize(N_points);
 			copied_ordered_positions_[2].resize(N_points);
+			copied_ordered_indices_.resize(N_points);
 
 #ifdef _OPENMP
 			const int N_threads = select_thread_count(N_points, exec, 4096);
@@ -943,6 +945,7 @@ namespace cellmate
 					copied_ordered_positions_[0][i] = x[idx];
 					copied_ordered_positions_[1][i] = y[idx];
 					copied_ordered_positions_[2][i] = z[idx];
+					copied_ordered_indices_[i] = idx;
 				}
 				return;
 			}
@@ -955,6 +958,7 @@ namespace cellmate
 				copied_ordered_positions_[0][i] = x[idx];
 				copied_ordered_positions_[1][i] = y[idx];
 				copied_ordered_positions_[2][i] = z[idx];
+				copied_ordered_indices_[i] = idx;
 			}
 		}
 

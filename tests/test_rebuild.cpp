@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -117,6 +118,42 @@ TEST(NeighborSearchRebuild, SparseCellsMatchAcrossRebuilds)
 				}
 				ASSERT_EQ(offsets.back(), N_points);
 			}
+		}
+	}
+}
+
+// verifies copied positions and indices stay in sync across large, small, and empty rebuilds
+// (dense clouds with several neighbors per query, checked at every point)
+TEST(NeighborSearchRebuild, CopiedIndicesMatchAcrossRebuilds)
+{
+	const float radius = 1.0f;
+	for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+	{
+		cellmate::NeighborSearch search(radius, cellmate::PointAccess::cpy);
+		std::vector<std::size_t> neighbors, expected;
+		uint32_t seed = 37;
+		for (std::size_t N_points : { 4000u, 301u, 0u, 37u, 4000u })
+		{
+			SCOPED_TRACE(::testing::Message() << "point count = " << N_points
+				<< ", 'execution' = " << static_cast<int>(execution) << ", seed = " << seed);
+			const cellmate_helpers::PointCloud points = N_points == 0
+				? cellmate_helpers::PointCloud{}
+				: cellmate_helpers::make_uniform_cloud(N_points, seed++, -5.0f, 5.0f);
+			search.rebuild(points.x.data(), points.y.data(), points.z.data(), N_points, execution);
+			for (std::size_t i = 0; i < N_points; i++)
+			{
+				const std::array<float, 3> query_pos{ points.x[i], points.y[i], points.z[i] };
+				search.query(query_pos, neighbors);
+				cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(),
+					N_points, radius, query_pos, expected);
+				std::sort(neighbors.begin(), neighbors.end());
+				ASSERT_EQ(neighbors, expected) << "query index = " << i;
+			}
+			search.query({ 0.0f, 0.0f, 0.0f }, neighbors);
+			cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(),
+				N_points, radius, { 0.0f, 0.0f, 0.0f }, expected);
+			std::sort(neighbors.begin(), neighbors.end());
+			ASSERT_EQ(neighbors, expected) << "query at the origin";
 		}
 	}
 }

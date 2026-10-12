@@ -103,6 +103,32 @@ TEST(NeighborIndexCompaction, MasksPreserveIndicesAndOrder)
 	}
 }
 
+// verifies every mask preserves full indices and lane order from a contiguous index array
+// (without writing past the output slots)
+TEST(NeighborIndexCompaction, ContiguousMasksPreserveIndicesAndOrder)
+{
+	const std::size_t N_lanes = cellmate::detail::DistQuery::N_lanes;
+	const std::size_t guard = (std::numeric_limits<std::size_t>::max)();
+	std::array<std::size_t, 16> indices;
+	for (std::size_t lane = 0; lane < indices.size(); lane++) { indices[lane] = entries[lane].idx; }
+	for (unsigned mask = 0; mask < (1u << N_lanes); mask++)
+	{
+		SCOPED_TRACE(::testing::Message() << "'mask' = " << mask);
+		std::array<std::size_t, cellmate::detail::DistQuery::N_lanes + 2> output;
+		output.fill(guard);
+		std::vector<std::size_t> expected;
+		for (std::size_t lane = 0; lane < N_lanes; lane++)
+		{
+			if ((mask & (1u << lane)) != 0) { expected.push_back(indices[lane]); }
+		}
+		const std::size_t count = cellmate::detail::pack_contiguous_indices(indices.data(), mask, output.data() + 1);
+		ASSERT_EQ(count, expected.size());
+		ASSERT_TRUE(std::equal(expected.begin(), expected.end(), output.begin() + 1));
+		ASSERT_EQ(output.front(), guard);
+		ASSERT_EQ(output.back(), guard);
+	}
+}
+
 // verifies partial masks crossing the buffer boundary, scalar tails, and appending batch rows
 TEST(NeighborSearchQuery, PartialMasksPreserveIndicesAcrossBufferBoundaries)
 {

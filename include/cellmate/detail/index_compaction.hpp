@@ -54,13 +54,12 @@ namespace cellmate
 			}
 		}
 
-		// pack indices selected by the mask into 'neighbors' and return their count
+		// packs indices selected by the mask into 'neighbors' and returns their count
 		// (requires 'DistQuery::N_lanes' input entries and output slots)
 		template<class PointEntry>
 		inline std::size_t pack_neighbor_indices(const PointEntry* point_order, unsigned mask, std::size_t* neighbors) noexcept
 		{
 			if (mask == 0) { return 0; }
-
 #if CELLMATE_DETAIL_SIMD_WIDTH == 512 && SIZE_MAX == UINT64_MAX
 			static_assert(DistQuery::N_lanes == 16, "AVX512 index compaction requires 16 lanes");
 			static_assert(std::is_standard_layout<PointEntry>::value &&
@@ -155,6 +154,79 @@ namespace cellmate
 			while (mask != 0)
 			{
 				neighbors[N_indices++] = point_order[first_set_bit(mask)].idx;
+				mask &= mask - 1;
+			}
+			return N_indices;
+#endif
+		}
+
+		// packs entries of a contiguous index array selected by the mask into 'neighbors' and returns their count
+		// (requires 'DistQuery::N_lanes' input entries and output slots)
+		inline std::size_t pack_contiguous_indices(const std::size_t* indices, unsigned mask, std::size_t* neighbors) noexcept
+		{
+#if CELLMATE_DETAIL_SIMD_WIDTH == 512 && SIZE_MAX == UINT64_MAX
+			static_assert(DistQuery::N_lanes == 16, "AVX512 index compaction requires 16 lanes");
+
+			const unsigned first_mask = mask & 0xffu;
+			const unsigned second_mask = (mask >> 8) & 0xffu;
+#if defined(_MSC_VER)
+			const std::size_t N_first = __popcnt(first_mask);
+			const std::size_t N_second = __popcnt(second_mask);
+#else
+			const std::size_t N_first = static_cast<std::size_t>(__builtin_popcount(first_mask));
+			const std::size_t N_second = static_cast<std::size_t>(__builtin_popcount(second_mask));
+#endif
+
+			// pack both halves in order without branching, compressing in registers instead of memory
+			// (compress stores are slow on some CPUs, unused slots are overwritten later)
+			_mm512_storeu_si512(neighbors, _mm512_maskz_compress_epi64(static_cast<__mmask8>(first_mask), _mm512_loadu_si512(indices)));
+			_mm512_storeu_si512(neighbors + N_first, _mm512_maskz_compress_epi64(static_cast<__mmask8>(second_mask), _mm512_loadu_si512(indices + 8)));
+			return N_first + N_second;
+
+#elif CELLMATE_DETAIL_SIMD_WIDTH == 256 && SIZE_MAX == UINT64_MAX
+			static_assert(DistQuery::N_lanes == 8, "AVX2 index compaction requires 8 lanes");
+
+			// same 32-bit lane shuffles as 'pack_neighbor_indices()', applied to directly loaded indices
+			// TODO: share the table with 'pack_neighbor_indices()'?
+			static constexpr std::uint32_t shuffle_table[16][8]{
+				{ 0, 0, 0, 0, 0, 0, 0, 0 },
+				{ 0, 1, 0, 0, 0, 0, 0, 0 },
+				{ 2, 3, 0, 0, 0, 0, 0, 0 },
+				{ 0, 1, 2, 3, 0, 0, 0, 0 },
+				{ 4, 5, 0, 0, 0, 0, 0, 0 },
+				{ 0, 1, 4, 5, 0, 0, 0, 0 },
+				{ 2, 3, 4, 5, 0, 0, 0, 0 },
+				{ 0, 1, 2, 3, 4, 5, 0, 0 },
+				{ 6, 7, 0, 0, 0, 0, 0, 0 },
+				{ 0, 1, 6, 7, 0, 0, 0, 0 },
+				{ 2, 3, 6, 7, 0, 0, 0, 0 },
+				{ 0, 1, 2, 3, 6, 7, 0, 0 },
+				{ 4, 5, 6, 7, 0, 0, 0, 0 },
+				{ 0, 1, 4, 5, 6, 7, 0, 0 },
+				{ 2, 3, 4, 5, 6, 7, 0, 0 },
+				{ 0, 1, 2, 3, 4, 5, 6, 7 }
+			};
+
+			static constexpr unsigned N_indices_by_mask[16]{ 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4 };
+
+			// pack both halves in order without branching
+			// (empty masks store unused slots that are overwritten later)
+			const unsigned first_mask = mask & 0xfu;
+			const unsigned second_mask = (mask >> 4) & 0xfu;
+			const std::size_t N_first = N_indices_by_mask[first_mask];
+			const __m256i first_indices = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(indices));
+			const __m256i second_indices = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(indices + 4));
+			const __m256i first_shuffle = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(shuffle_table[first_mask]));
+			const __m256i second_shuffle = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(shuffle_table[second_mask]));
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(neighbors), _mm256_permutevar8x32_epi32(first_indices, first_shuffle));
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(neighbors + N_first), _mm256_permutevar8x32_epi32(second_indices, second_shuffle));
+			return N_first + N_indices_by_mask[second_mask];
+#else
+			// collect matching indices one at a time
+			std::size_t N_indices = 0;
+			while (mask != 0)
+			{
+				neighbors[N_indices++] = indices[first_set_bit(mask)];
 				mask &= mask - 1;
 			}
 			return N_indices;
