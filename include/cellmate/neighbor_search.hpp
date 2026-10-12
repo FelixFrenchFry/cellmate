@@ -656,6 +656,7 @@ namespace cellmate
 		// finds groups of queries in the range that share the same candidate cell bounds and process
 		// them either in a group or individually, decision based on group size to SIMD width ratio
 		// (appends neighbor lists to 'buffer', storing each count in 'offsets' at its original query index)
+		// NOTE: only 'ref' positions use query groups, 'cpy' positions are typically faster with SIMD across candidates
 		void query_batch_morton_range(const float* x, const float* y, const float* z,
 			const std::vector<PointEntry>& query_order, std::size_t begin, std::size_t end,
 			QueryContext& context, std::vector<std::size_t>& buffer, std::vector<std::size_t>& offsets) const
@@ -698,7 +699,7 @@ namespace cellmate
 
 				// process a full group's queries togehter with SIMD across queries, or
 				// process a non-full group's queries individually with SIMD across candidates
-				if (N_lanes > 1 && N_group_size == N_lanes) // full group
+				if (N_lanes > 1 && N_group_size == N_lanes && point_access_ == PointAccess::ref) // full group
 				{
 					const detail::DistQueryGroup dist_queries(query_x, query_y, query_z, radius_squ_);
 					if (point_access_ == PointAccess::cpy)
