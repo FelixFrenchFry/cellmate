@@ -16,7 +16,7 @@
 TEST(BenchmarkScenarios, CloudsAreDeterministic)
 {
 	for (const auto* scenario : { &cellmate_bench::uniform_volume(), &cellmate_bench::gradient_volume(),
-		&cellmate_bench::planar_surface() })
+		&cellmate_bench::clustered_volume(), &cellmate_bench::planar_surface() })
 	{
 		SCOPED_TRACE(scenario->name);
 		cellmate_bench::Config config;
@@ -38,8 +38,8 @@ TEST(BenchmarkScenarios, CloudsAreDeterministic)
 
 		const bool planar = scenario == &cellmate_bench::planar_surface();
 		const float half_side = planar
-			? float(std::sqrt(config.N_points * 3.14159265358979323846 / config.N_nominal_avg_nbrs)) / 2
-			: float(std::cbrt(config.N_points * (4.0 / 3) * 3.14159265358979323846 / config.N_nominal_avg_nbrs)) / 2;
+			? float(std::sqrt(config.N_points * 3.14159265358979323846 / config.N_target_avg_nbrs)) / 2
+			: float(std::cbrt(config.N_points * (4.0 / 3) * 3.14159265358979323846 / config.N_target_avg_nbrs)) / 2;
 		for (std::size_t i = 0; i < config.N_points; i++)
 		{
 			EXPECT_GE(points.x[i], -half_side);
@@ -67,7 +67,7 @@ TEST(BenchmarkScenarios, GradientMatchesDistribution)
 	const auto gradient = cellmate_bench::gradient_volume().make_workload(config).points;
 	EXPECT_EQ(gradient.y, uniform.y);
 	EXPECT_EQ(gradient.z, uniform.z);
-	const double side = std::cbrt(double(config.N_points) * (4.0 / 3) * 3.14159265358979323846 / config.N_nominal_avg_nbrs);
+	const double side = std::cbrt(double(config.N_points) * (4.0 / 3) * 3.14159265358979323846 / config.N_target_avg_nbrs);
 	double cumulative = 0;
 	for (int slab = 0; slab < 10; slab++)
 	{
@@ -82,33 +82,106 @@ TEST(BenchmarkScenarios, GradientMatchesDistribution)
 	}
 }
 
-// nominal count controls spatial scale directly, while the search radius stays fixed
-TEST(BenchmarkWorkloads, NominalCountControlsSpatialScale)
+// spheres occupy cell centers in a fixed grid and have uniform volume density
+TEST(BenchmarkScenarios, ClusteredVolumeUsesRegularGrid)
+{
+	cellmate_bench::Config config;
+	config.N_points = 4096;
+	const auto workload = cellmate_bench::clustered_volume().make_workload(config);
+	const double half_side = workload.half_extent[0];
+	const double cell_side = 2 * half_side / 4;
+	const double radius_squared = std::pow(0.45 * cell_side, 2);
+	double total_distance_squared = 0;
+	for (std::size_t i = 0; i < config.N_points; i++)
+	{
+		double distance_squared = 0;
+		for (float value : { workload.points.x[i], workload.points.y[i], workload.points.z[i] })
+		{
+			const double cell = std::floor((value + half_side) / cell_side);
+			const double offset = value - (-half_side + (cell + 0.5) * cell_side);
+			distance_squared += offset * offset;
+		}
+		ASSERT_LE(distance_squared, radius_squared * 1.000001);
+		total_distance_squared += distance_squared;
+	}
+	EXPECT_NEAR(total_distance_squared / (config.N_points * radius_squared), 3.0 / 5, 0.02);
+}
+
+// clustered points form dense pockets while independent domain queries also encounter empty space
+TEST(BenchmarkScenarios, ClusteredVolumeHasDensePockets)
+{
+	cellmate_bench::Config config;
+	config.N_points = 32768;
+	config.N_queries = 1024;
+	config.N_target_avg_nbrs = 2;
+	config.query_placement = cellmate_bench::QueryPlacement::domain;
+	const auto workload = cellmate_bench::prepare_workload(cellmate_bench::clustered_volume(), config);
+	const auto uniform = cellmate_bench::uniform_volume().make_workload(config).points;
+	std::size_t clustered_neighbors = 0, uniform_neighbors = 0, empty_queries = 0;
+	std::vector<std::size_t> neighbors;
+	for (std::size_t i = 0; i < 512; i++)
+	{
+		cellmate_helpers::brute_force(workload.points.x.data(), workload.points.y.data(), workload.points.z.data(),
+			config.N_points, cellmate_bench::search_radius,
+			{ workload.points.x[i], workload.points.y[i], workload.points.z[i] }, neighbors);
+		clustered_neighbors += neighbors.size() - 1;
+		cellmate_helpers::brute_force(uniform.x.data(), uniform.y.data(), uniform.z.data(),
+			config.N_points, cellmate_bench::search_radius, { uniform.x[i], uniform.y[i], uniform.z[i] }, neighbors);
+		uniform_neighbors += neighbors.size() - 1;
+	}
+	EXPECT_GT(clustered_neighbors, uniform_neighbors * 2);
+	for (std::size_t i = 0; i < config.N_queries; i++)
+	{
+		cellmate_helpers::brute_force(workload.points.x.data(), workload.points.y.data(), workload.points.z.data(),
+			config.N_points, cellmate_bench::search_radius,
+			{ workload.queries.x[i], workload.queries.y[i], workload.queries.z[i] }, neighbors);
+		if (neighbors.empty()) { empty_queries++; }
+	}
+	EXPECT_GT(empty_queries, config.N_queries / 4);
+}
+
+// calibrated workloads reach the target average neighbors (excluding self) with the fixed search radius
+TEST(BenchmarkWorkloads, TargetCountIsReached)
 {
 	for (const auto* scenario : { &cellmate_bench::uniform_volume(), &cellmate_bench::gradient_volume(),
-		&cellmate_bench::planar_surface() })
+		&cellmate_bench::clustered_volume(), &cellmate_bench::planar_surface() })
+	for (auto placement : { cellmate_bench::QueryPlacement::points, cellmate_bench::QueryPlacement::domain })
+	for (double target : { 0.5, 32.0 })
 	{
 		SCOPED_TRACE(scenario->name);
+		SCOPED_TRACE(int(placement));
+		SCOPED_TRACE(target);
+		// query the calibration sample itself (batches match brute force in 'BatchMatchesBruteForce')
 		cellmate_bench::Config config;
-		config.N_points = config.N_queries = 64;
-		const auto reference = cellmate_bench::prepare_workload(*scenario, config);
-		const bool planar = scenario == &cellmate_bench::planar_surface();
-		for (double nominal : { 0.1, 2.0, 8.0, 32.0, 128.0 })
-		{
-			SCOPED_TRACE(nominal);
-			config.N_nominal_avg_nbrs = nominal;
-			const auto workload = cellmate_bench::prepare_workload(*scenario, config);
-			EXPECT_EQ(workload.queries.x, workload.points.x);
-			EXPECT_EQ(workload.queries.y, workload.points.y);
-			EXPECT_EQ(workload.queries.z, workload.points.z);
-			const double scale = planar ? std::sqrt(32 / nominal) : std::cbrt(32 / nominal);
-			for (std::size_t i = 0; i < config.N_points; i++)
-			{
-				EXPECT_NEAR(workload.points.x[i], reference.points.x[i] * scale, 0.00001);
-				EXPECT_NEAR(workload.points.y[i], reference.points.y[i] * scale, 0.00001);
-				EXPECT_NEAR(workload.points.z[i], reference.points.z[i] * scale, 0.00001);
-			}
-		}
+		config.N_points = 4096;
+		config.N_queries = cellmate_bench::calibration_query_count(target);
+		config.N_target_avg_nbrs = target;
+		config.query_placement = placement;
+		const auto workload = cellmate_bench::prepare_workload(*scenario, config);
+		cellmate::NeighborSearch search(cellmate_bench::search_radius);
+		search.rebuild(workload.points.x.data(), workload.points.y.data(), workload.points.z.data(), config.N_points);
+		std::vector<std::size_t> neighbors, offsets;
+		search.query_batch(workload.queries.x.data(), workload.queries.y.data(), workload.queries.z.data(),
+			config.N_queries, neighbors, offsets);
+		const double N_self = placement == cellmate_bench::QueryPlacement::points ? 1 : 0;
+		EXPECT_NEAR(double(neighbors.size()) / config.N_queries - N_self, target, 0.005 * target);
+	}
+}
+
+// targets beyond the point count include every point instead of shrinking the cloud further
+TEST(BenchmarkWorkloads, UnreachableTargetsIncludeAllPoints)
+{
+	cellmate_bench::Config config;
+	config.N_points = config.N_queries = 8;
+	config.N_target_avg_nbrs = 32;
+	const auto workload = cellmate_bench::prepare_workload(cellmate_bench::uniform_volume(), config);
+	std::vector<std::size_t> neighbors;
+	for (std::size_t i = 0; i < config.N_queries; i++)
+	{
+		cellmate_helpers::brute_force(workload.points.x.data(), workload.points.y.data(), workload.points.z.data(),
+			config.N_points, cellmate_bench::search_radius,
+			{ workload.queries.x[i], workload.queries.y[i], workload.queries.z[i] }, neighbors);
+		EXPECT_EQ(neighbors.size(), config.N_points);
 	}
 }
 
@@ -121,7 +194,7 @@ TEST(BenchmarkWorkloads, QuerySamplingIsDeterministic)
 		config.query_placement = placement;
 		config.N_points = 128;
 		config.N_queries = 2053;
-		config.N_nominal_avg_nbrs = 8;
+		config.N_target_avg_nbrs = 8;
 		const auto& scenario = cellmate_bench::gradient_volume();
 		const auto first = cellmate_bench::prepare_workload(scenario, config);
 		config.compute_mode = cellmate::ComputeMode::seq;
@@ -144,12 +217,12 @@ TEST(BenchmarkWorkloads, QuerySamplingIsDeterministic)
 TEST(BenchmarkWorkloads, IndependentQueriesUseDomain)
 {
 	for (const auto* scenario : { &cellmate_bench::uniform_volume(), &cellmate_bench::gradient_volume(),
-		&cellmate_bench::planar_surface() })
+		&cellmate_bench::clustered_volume(), &cellmate_bench::planar_surface() })
 	{
 		SCOPED_TRACE(scenario->name);
 		cellmate_bench::Config config;
 		config.N_points = config.N_queries = 128;
-		config.N_nominal_avg_nbrs = 8;
+		config.N_target_avg_nbrs = 8;
 		config.query_placement = cellmate_bench::QueryPlacement::domain;
 		const auto equal_counts = cellmate_bench::prepare_workload(*scenario, config);
 		EXPECT_NE(equal_counts.queries.x, equal_counts.points.x);
@@ -167,7 +240,7 @@ TEST(BenchmarkWorkloads, IndependentQueriesUseDomain)
 				else
 				{
 					EXPECT_GE(value, -limit);
-					EXPECT_LT(value, limit);
+					EXPECT_LE(value, limit); // scaling can round onto the bound
 				}
 			}
 			if (limit > 0)
@@ -183,7 +256,7 @@ TEST(BenchmarkWorkloads, IndependentQueriesUseDomain)
 TEST(BenchmarkWorkloads, BatchMatchesBruteForce)
 {
 	for (const auto* scenario : { &cellmate_bench::uniform_volume(), &cellmate_bench::gradient_volume(),
-		&cellmate_bench::planar_surface() })
+		&cellmate_bench::clustered_volume(), &cellmate_bench::planar_surface() })
 	for (auto placement : { cellmate_bench::QueryPlacement::points, cellmate_bench::QueryPlacement::domain })
 	{
 		SCOPED_TRACE(scenario->name);
@@ -191,7 +264,7 @@ TEST(BenchmarkWorkloads, BatchMatchesBruteForce)
 		cellmate_bench::Config config;
 		config.N_points = 64;
 		config.N_queries = 97;
-		config.N_nominal_avg_nbrs = 8;
+		config.N_target_avg_nbrs = 8;
 		config.query_placement = placement;
 		const auto workload = cellmate_bench::prepare_workload(*scenario, config);
 		for (auto compute_mode : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
@@ -221,18 +294,18 @@ TEST(BenchmarkWorkloads, BatchMatchesBruteForce)
 	}
 }
 
-// nominal counts are positive estimates, not achievable targets limited by the point count
+// target counts must be positive, while targets beyond the point count remain valid
 TEST(BenchmarkWorkloads, InvalidSettingsAreRejected)
 {
 	cellmate_bench::Config config;
 	config.N_points = config.N_queries = 8;
-	for (double nominal : { 0.0, -1.0, std::numeric_limits<double>::infinity(),
+	for (double target : { 0.0, -1.0, std::numeric_limits<double>::infinity(),
 		std::numeric_limits<double>::quiet_NaN() })
 	{
-		config.N_nominal_avg_nbrs = nominal;
+		config.N_target_avg_nbrs = target;
 		EXPECT_THROW(cellmate_bench::prepare_workload(cellmate_bench::uniform_volume(), config), std::invalid_argument);
 	}
-	config.N_nominal_avg_nbrs = 1;
+	config.N_target_avg_nbrs = 1;
 	config.N_queries = 0;
 	EXPECT_THROW(cellmate_bench::prepare_workload(cellmate_bench::uniform_volume(), config), std::invalid_argument);
 	config.N_queries = 8;
@@ -242,7 +315,7 @@ TEST(BenchmarkWorkloads, InvalidSettingsAreRejected)
 	config.N_points = 0;
 	EXPECT_THROW(cellmate_bench::prepare_workload(cellmate_bench::uniform_volume(), config), std::invalid_argument);
 	config.N_points = 1;
-	config.N_nominal_avg_nbrs = 32;
+	config.N_target_avg_nbrs = 32;
 	EXPECT_NO_THROW(cellmate_bench::prepare_workload(cellmate_bench::uniform_volume(), config));
 	for (int placement : { 2, 99 })
 	{

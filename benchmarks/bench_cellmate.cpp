@@ -160,7 +160,7 @@ namespace cellmate_bench
 				validate();
 				state.counters["N_points"] = double(config.N_points);
 				state.counters["N_queries"] = double(config.N_queries);
-				state.counters["N_nominal_avg_nbrs"] = config.N_nominal_avg_nbrs;
+				state.counters["N_target_avg_nbrs"] = config.N_target_avg_nbrs;
 				state.counters["radius"] = search_radius;
 				state.counters["N_max_threads"] = config.N_max_threads;
 				state.counters["rng_seed"] = config.rng_seed;
@@ -240,8 +240,8 @@ namespace cellmate_bench
 				register_sweep(scenario, reference, operation, "queries", "N_queries",
 					&Config::N_queries, sweeps.N_queries, failed);
 			}
-			register_sweep(scenario, reference, operation, "neighbors", "N_nominal_avg_nbrs",
-				&Config::N_nominal_avg_nbrs, sweeps.N_nominal_avg_nbrs, failed);
+			register_sweep(scenario, reference, operation, "neighbors", "N_target_avg_nbrs",
+				&Config::N_target_avg_nbrs, sweeps.N_target_avg_nbrs, failed);
 			if (reference.compute_mode == cellmate::ComputeMode::par && uses_compute_mode(operation))
 			{
 				register_sweep(scenario, reference, operation, "threads", "N_max_threads",

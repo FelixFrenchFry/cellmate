@@ -9,7 +9,7 @@ namespace cellmate_bench
 		BenchmarkMatrix matrix;
 		matrix.reference.N_points = 1'000'000;
 		matrix.reference.N_queries = 1'000'000;
-		matrix.reference.N_nominal_avg_nbrs = 32.0;
+		matrix.reference.N_target_avg_nbrs = 32.0;
 		matrix.reference.N_max_threads = 8;
 		matrix.reference.rng_seed = 67;
 
@@ -46,7 +46,7 @@ namespace cellmate_bench
 			10000,
 			1000000, // 1 mio
 		};
-		matrix.sweeps.N_nominal_avg_nbrs = {
+		matrix.sweeps.N_target_avg_nbrs = {
 			2.0,
 			8.0,
 			32.0

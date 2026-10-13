@@ -49,7 +49,7 @@ namespace cellmate_bench
 	{
 		std::vector<std::size_t> N_points;
 		std::vector<std::size_t> N_queries;
-		std::vector<double> N_nominal_avg_nbrs;
+		std::vector<double> N_target_avg_nbrs;
 		std::vector<int> N_max_threads;
 	};
 

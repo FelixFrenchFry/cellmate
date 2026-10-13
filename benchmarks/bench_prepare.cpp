@@ -1,11 +1,15 @@
 #include "bench_config.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <random>
 #include <stdexcept>
+#include <tuple>
+#include <vector>
 
 namespace cellmate_bench
 {
@@ -67,6 +71,62 @@ namespace cellmate_bench
 			}
 			return queries;
 		}
+
+		// returns the search radius at which the calibration queries achieve the targeted average neighbor count
+		// (midway between the last neighbor inside and the first one outside, so none lies exactly on the cutoff)
+		double calibrate_radius(const cellmate_helpers::PointCloud& points,
+			const std::array<float, 3>& half_extent, const Config& config)
+		{
+			// sample independently of the query count
+			Config calibration = config;
+			calibration.N_queries = calibration_query_count(config.N_target_avg_nbrs);
+			const auto queries = make_queries(points, half_extent, calibration);
+
+			// queries placed on points also find themselves
+			const std::size_t N_self = config.query_placement == QueryPlacement::points ? calibration.N_queries : 0;
+			const std::size_t N_target = std::size_t(std::llround(config.N_target_avg_nbrs * calibration.N_queries)) + N_self;
+
+			// start slightly above the estimated scale and double until target is reached
+			std::vector<std::size_t> neighbors, offsets;
+			std::vector<double> distances_squ;
+			for (double radius = 1.25 * search_radius;; radius *= 2)
+			{
+				// find neighbors within the current radius
+				cellmate::NeighborSearch search{ float(radius) };
+				search.rebuild(points.x.data(), points.y.data(), points.z.data(), config.N_points);
+				search.query_batch(queries.x.data(), queries.y.data(), queries.z.data(), calibration.N_queries, neighbors, offsets);
+
+				distances_squ.clear();
+				for (std::size_t i = 0; i < calibration.N_queries; i++)
+				{
+					for (std::size_t j = offsets[i]; j < offsets[i + 1]; j++)
+					{
+						const double dx = double(queries.x[i]) - points.x[neighbors[j]];
+						const double dy = double(queries.y[i]) - points.y[neighbors[j]];
+						const double dz = double(queries.z[i]) - points.z[neighbors[j]];
+						distances_squ.push_back(dx * dx + dy * dy + dz * dz);
+					}
+				}
+
+				// radius midway between the last included and first excluded distance
+				if (distances_squ.size() > N_target)
+				{
+					std::nth_element(distances_squ.begin(), distances_squ.begin() + N_target, distances_squ.end());
+					const double outside = distances_squ[N_target];
+					const double inside = N_target == 0
+						? 0.0
+						: *std::max_element(distances_squ.begin(), distances_squ.begin() + N_target);
+					return (std::sqrt(inside) + std::sqrt(outside)) / 2;
+				}
+
+				// unreachable targets include every point
+				if (distances_squ.size() == calibration.N_queries * config.N_points)
+				{
+					const double max_distance = std::sqrt(*std::max_element(distances_squ.begin(), distances_squ.end()));
+					return (std::max)(double(search_radius), max_distance * (1 + std::ldexp(1.0, -10)));
+				}
+			}
+		}
 	}
 
 	Workload prepare_workload(const Scenario& scenario, const Config& config)
@@ -75,9 +135,9 @@ namespace cellmate_bench
 		{
 			throw std::invalid_argument("point count, query count and maximum thread count must be positive");
 		}
-		if (!std::isfinite(config.N_nominal_avg_nbrs) || config.N_nominal_avg_nbrs <= 0)
+		if (!std::isfinite(config.N_target_avg_nbrs) || config.N_target_avg_nbrs <= 0)
 		{
-			throw std::invalid_argument("nominal average neighbors must be finite and positive");
+			throw std::invalid_argument("target average neighbors must be finite and positive");
 		}
 		if (config.compute_mode != cellmate::ComputeMode::seq && config.compute_mode != cellmate::ComputeMode::par)
 		{
@@ -98,6 +158,27 @@ namespace cellmate_bench
 		}
 
 		workload.queries = make_queries(workload.points, workload.half_extent, config);
+
+		// scale the workload such that the fixed search radius reaches the targeted average neighbor count
+		// (caches the calibrated radius per workload for repeated calls, not thread-safe!)
+		using CalibrationKey = std::tuple<const Scenario*, std::size_t, double, QueryPlacement, std::uint32_t>;
+		static std::map<CalibrationKey, double> calibrated_radii;
+		const CalibrationKey key{ &scenario, config.N_points, config.N_target_avg_nbrs, config.query_placement, config.rng_seed };
+		auto cached = calibrated_radii.find(key);
+		if (cached == calibrated_radii.end())
+		{
+			cached = calibrated_radii.emplace(key, calibrate_radius(workload.points, workload.half_extent, config)).first;
+		}
+		if (!std::isnormal(float(cached->second)))
+		{
+			throw std::runtime_error("calibrated search radius must be a finite positive normal float");
+		}
+
+		const double scale = search_radius / cached->second;
+		for (float& half_side : workload.half_extent) { half_side = float(half_side * scale); }
+		for (auto* cloud : { &workload.points, &workload.queries })
+		for (auto* coordinates : { &cloud->x, &cloud->y, &cloud->z })
+		for (float& value : *coordinates) { value = float(value * scale); }
 		return workload;
 	}
 }

@@ -15,7 +15,7 @@ namespace cellmate_bench
 		Params derive_params(const Config& config, Params params)
 		{
 			params.half_side = float(search_radius * std::sqrt(
-				double(config.N_points) * pi / config.N_nominal_avg_nbrs)) / 2;
+				double(config.N_points) * pi / config.N_target_avg_nbrs)) / 2;
 			return params;
 		}
 

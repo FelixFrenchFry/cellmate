@@ -23,7 +23,7 @@ namespace cellmate_bench
 			}
 			
 			params.half_side = float(search_radius * std::cbrt(
-				double(config.N_points) * (4.0 / 3) * pi / config.N_nominal_avg_nbrs)) / 2;
+				double(config.N_points) * (4.0 / 3) * pi / config.N_target_avg_nbrs)) / 2;
 			params.total_weight = double(params.N_slabs) * (double(params.N_slabs) + 1) / 2;
 			return params;
 		}

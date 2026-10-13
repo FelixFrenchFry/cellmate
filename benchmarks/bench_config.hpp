@@ -4,7 +4,9 @@
 
 #include "../helpers/point_cloud.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -24,7 +26,7 @@ namespace cellmate_bench
 	{
 		std::size_t N_points = 1'000'000;
 		std::size_t N_queries = 1'000'000;
-		double N_nominal_avg_nbrs = 32.0; // uniform-distribution estimate (excluding self), actual counts depend on the scenario
+		double N_target_avg_nbrs = 32.0; // average neighbors per query (excluding self), calibrated by scaling each workload
 		int N_max_threads = 4;
 		cellmate::ComputeMode compute_mode = cellmate::ComputeMode::par;
 		cellmate::PointAccess point_access = cellmate::PointAccess::cpy;
@@ -46,6 +48,12 @@ namespace cellmate_bench
 	};
 
 	Workload prepare_workload(const Scenario& scenario, const Config& config);
+
+	// calibration samples about 2^21 neighbors, within bounds for very sparse and dense targets
+	inline std::size_t calibration_query_count(double N_target_avg_nbrs)
+	{
+		return std::size_t((std::min)(std::ldexp(1.0, 20), (std::max)(4096.0, std::round(std::ldexp(1.0, 21) / N_target_avg_nbrs))));
+	}
 
 	const Scenario& uniform_volume();
 	const Scenario& gradient_volume();
