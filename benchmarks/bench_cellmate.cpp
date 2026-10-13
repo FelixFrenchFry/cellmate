@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <sstream>
@@ -268,8 +269,18 @@ int main(int argc, char** argv)
 		std::copy(argv + 2, argv + argc + 1, argv + 1);
 		argc--;
 	}
-	benchmark::Initialize(&argc, argv);
-	if (benchmark::ReportUnrecognizedArguments(argc, argv)) { return 1; }
+
+	// defaults before user arguments, so explicit flags and environment variables take precedence
+	char repetitions[] = "--benchmark_repetitions=3";
+	char min_time[] = "--benchmark_min_time=1s";
+	std::vector<char*> arguments{ argv[0] };
+	if (!std::getenv("BENCHMARK_REPETITIONS")) { arguments.push_back(repetitions); }
+	if (!std::getenv("BENCHMARK_MIN_TIME")) { arguments.push_back(min_time); }
+	arguments.insert(arguments.end(), argv + 1, argv + argc);
+	argc = int(arguments.size());
+	arguments.push_back(nullptr);
+	benchmark::Initialize(&argc, arguments.data());
+	if (benchmark::ReportUnrecognizedArguments(argc, arguments.data())) { return 1; }
 	benchmark::AddCustomContext("profile", profile);
 	bool failed = false;
 	cellmate_bench::register_benchmarks(matrix, failed);
