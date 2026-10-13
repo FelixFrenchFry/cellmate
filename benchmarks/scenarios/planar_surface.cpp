@@ -30,7 +30,7 @@ namespace cellmate_bench
 
 	const Scenario& planar_surface()
 	{
-		static const Scenario scenario{ "planar_surface", Config{}, [params = Params{}](const Config& config)
+		static const Scenario scenario{ "planar_surface", [params = Params{}](const Config& config)
 		{
 			const auto derived = derive_params(config, params);
 			return Workload{ make_points(config, derived), {},

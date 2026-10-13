@@ -27,7 +27,7 @@ namespace cellmate_bench
 
 	const Scenario& uniform_volume()
 	{
-		static const Scenario scenario{ "uniform_volume", Config{}, [params = Params{}](const Config& config)
+		static const Scenario scenario{ "uniform_volume", [params = Params{}](const Config& config)
 		{
 			const auto derived = derive_params(config, params);
 			return Workload{ make_points(config, derived), {},

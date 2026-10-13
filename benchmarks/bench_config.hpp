@@ -42,7 +42,6 @@ namespace cellmate_bench
 	struct Scenario
 	{
 		const char* name;
-		Config reference;
 		std::function<Workload(const Config&)> make_workload;
 	};
 

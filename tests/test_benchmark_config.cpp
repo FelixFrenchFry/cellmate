@@ -19,7 +19,7 @@ TEST(BenchmarkScenarios, CloudsAreDeterministic)
 		&cellmate_bench::planar_surface() })
 	{
 		SCOPED_TRACE(scenario->name);
-		cellmate_bench::Config config = scenario->reference;
+		cellmate_bench::Config config;
 		config.N_points = 64;
 		const auto points = scenario->make_workload(config).points;
 		config.N_queries = 97;
@@ -61,7 +61,7 @@ TEST(BenchmarkScenarios, CloudsAreDeterministic)
 // verifies ten equal slabs with linearly increasing density and unchanged uniform y/z coordinates
 TEST(BenchmarkScenarios, GradientMatchesDistribution)
 {
-	cellmate_bench::Config config = cellmate_bench::gradient_volume().reference;
+	cellmate_bench::Config config;
 	config.N_points = 10000;
 	const auto uniform = cellmate_bench::uniform_volume().make_workload(config).points;
 	const auto gradient = cellmate_bench::gradient_volume().make_workload(config).points;
@@ -89,7 +89,7 @@ TEST(BenchmarkWorkloads, NominalCountControlsSpatialScale)
 		&cellmate_bench::planar_surface() })
 	{
 		SCOPED_TRACE(scenario->name);
-		cellmate_bench::Config config = scenario->reference;
+		cellmate_bench::Config config;
 		config.N_points = config.N_queries = 64;
 		const auto reference = cellmate_bench::prepare_workload(*scenario, config);
 		const bool planar = scenario == &cellmate_bench::planar_surface();
@@ -147,7 +147,7 @@ TEST(BenchmarkWorkloads, IndependentQueriesUseDomain)
 		&cellmate_bench::planar_surface() })
 	{
 		SCOPED_TRACE(scenario->name);
-		cellmate_bench::Config config = scenario->reference;
+		cellmate_bench::Config config;
 		config.N_points = config.N_queries = 128;
 		config.N_nominal_avg_nbrs = 8;
 		config.query_placement = cellmate_bench::QueryPlacement::domain;
@@ -188,7 +188,7 @@ TEST(BenchmarkWorkloads, BatchMatchesBruteForce)
 	{
 		SCOPED_TRACE(scenario->name);
 		SCOPED_TRACE(int(placement));
-		cellmate_bench::Config config = scenario->reference;
+		cellmate_bench::Config config;
 		config.N_points = 64;
 		config.N_queries = 97;
 		config.N_nominal_avg_nbrs = 8;

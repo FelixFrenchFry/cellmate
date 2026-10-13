@@ -40,6 +40,43 @@ namespace cellmate_bench
 			QueryMode query_mode;
 		};
 
+		struct ScenarioValues
+		{
+			std::vector<const Scenario*> values{
+				&uniform_volume(),
+				&gradient_volume(),
+				&planar_surface()
+			};
+		};
+
+		struct ModeValues
+		{
+			std::vector<cellmate::ComputeMode> compute_mode{
+				cellmate::ComputeMode::seq,
+				cellmate::ComputeMode::par
+			};
+			std::vector<cellmate::PointAccess> point_access{
+				cellmate::PointAccess::cpy
+			};
+			std::vector<cellmate::QueryOrder> query_order{
+				cellmate::QueryOrder::morton
+			};
+			std::vector<QueryPlacement> query_placement{
+				QueryPlacement::points
+			};
+		};
+
+		struct OperationValues
+		{
+			std::vector<Operation> values{
+				{ "rebuild",             RebuildMode::once, QueryMode::none },
+				{ "query",               RebuildMode::none, QueryMode::single },
+				{ "query_batch",         RebuildMode::none, QueryMode::batch },
+				{ "rebuild_query",       RebuildMode::once, QueryMode::single },
+				{ "rebuild_query_batch", RebuildMode::once, QueryMode::batch }
+			};
+		};
+
 		struct SweepValues
 		{
 			std::vector<std::size_t> N_points{
@@ -49,7 +86,7 @@ namespace cellmate_bench
 				1000,
 				10000,
 				100000,
-				1000000,
+				1000000, // 1 mio
 				10000000
 			};
 			std::vector<std::size_t> N_queries{
@@ -59,7 +96,7 @@ namespace cellmate_bench
 				1000,
 				10000,
 				100000,
-				1000000,
+				1000000, // 1 mio
 				10000000
 			};
 			std::vector<double> N_nominal_avg_nbrs{
@@ -234,16 +271,20 @@ namespace cellmate_bench
 		}
 
 		template<typename T>
-		void register_sweep(const Scenario* scenario, const Operation& operation,
+		void register_sweep(const Scenario* scenario, const Config& reference, const Operation& operation,
 			const char* experiment, const char* parameter_name, T Config::* member,
 			const std::vector<T>& values, bool& failed)
 		{
 			for (T value : values)
 			{
-				Config config = scenario->reference;
+				Config config = reference;
 				config.*member = value;
 				std::ostringstream name;
-				name << scenario->name << '/' << experiment << '/' << operation.name << '/' << parameter_name << ':' << value;
+				name << scenario->name << '/' << experiment << '/' << operation.name << '/' << parameter_name << ':' << value
+					<< "/compute_mode:" << (config.compute_mode == cellmate::ComputeMode::par ? "par" : "seq")
+					<< "/point_access:" << (config.point_access == cellmate::PointAccess::cpy ? "cpy" : "ref")
+					<< "/query_order:" << (config.query_order == cellmate::QueryOrder::morton ? "morton" : "input")
+					<< "/query_placement:" << (config.query_placement == QueryPlacement::points ? "points" : "domain");
 				auto* registration = benchmark::RegisterBenchmark(name.str().c_str(),
 					[scenario, operation, config, &failed](benchmark::State& state)
 					{
@@ -252,37 +293,51 @@ namespace cellmate_bench
 				registration->UseRealTime()->Unit(benchmark::kMillisecond);
 			}
 		}
+
+		void register_experiments(const Scenario* scenario, Config reference, const Operation& operation,
+			const SweepValues& sweeps, bool& failed)
+		{
+			if (reference.compute_mode == cellmate::ComputeMode::seq) { reference.N_max_threads = 1; }
+
+			register_sweep(scenario, reference, operation, "reference", "N",
+				&Config::N_points, { reference.N_points }, failed);
+			register_sweep(scenario, reference, operation, "points", "N",
+				&Config::N_points, sweeps.N_points, failed);
+			register_sweep(scenario, reference, operation, "queries", "N_queries",
+				&Config::N_queries, sweeps.N_queries, failed);
+			register_sweep(scenario, reference, operation, "neighbors", "N_nominal_avg_nbrs",
+				&Config::N_nominal_avg_nbrs, sweeps.N_nominal_avg_nbrs, failed);
+			if (reference.compute_mode == cellmate::ComputeMode::par)
+			{
+				register_sweep(scenario, reference, operation, "threads", "N_max_threads",
+					&Config::N_max_threads, sweeps.N_max_threads, failed);
+			}
+		}
 	}
 
 	void register_benchmarks(bool& failed)
 	{
 		const SweepValues sweeps;
-		const Scenario* scenarios[] = {
-			&uniform_volume(),
-			&gradient_volume(),
-			&planar_surface()
-		};
-		const Operation operations[] = {
-			{ "rebuild",             RebuildMode::once, QueryMode::none },
-			{ "query",               RebuildMode::none, QueryMode::single },
-			{ "query_batch",         RebuildMode::none, QueryMode::batch },
-			{ "rebuild_query",       RebuildMode::once, QueryMode::single },
-			{ "rebuild_query_batch", RebuildMode::once, QueryMode::batch }
-		};
-		for (const Scenario* scenario : scenarios)
+		const ModeValues modes;
+		const ScenarioValues scenarios;
+		const OperationValues operations;
+
+		// iterate over entire parameter matrix
+		for (const Scenario* scenario : scenarios.values)
+		for (auto compute_mode : modes.compute_mode)
+		for (auto point_access : modes.point_access)
+		for (auto query_order : modes.query_order)
+		for (auto query_placement : modes.query_placement)
 		{
-			for (const Operation& operation : operations)
+			Config reference;
+			reference.compute_mode = compute_mode;
+			reference.point_access = point_access;
+			reference.query_order = query_order;
+			reference.query_placement = query_placement;
+
+			for (const Operation& operation : operations.values)
 			{
-				register_sweep(scenario, operation, "reference", "N",
-					&Config::N_points, { scenario->reference.N_points }, failed);
-				register_sweep(scenario, operation, "points", "N",
-					&Config::N_points, sweeps.N_points, failed);
-				register_sweep(scenario, operation, "queries", "N_queries",
-					&Config::N_queries, sweeps.N_queries, failed);
-				register_sweep(scenario, operation, "neighbors", "N_nominal_avg_nbrs",
-					&Config::N_nominal_avg_nbrs, sweeps.N_nominal_avg_nbrs, failed);
-				register_sweep(scenario, operation, "threads", "N_max_threads",
-					&Config::N_max_threads, sweeps.N_max_threads, failed);
+				register_experiments(scenario, reference, operation, sweeps, failed);
 			}
 		}
 	}

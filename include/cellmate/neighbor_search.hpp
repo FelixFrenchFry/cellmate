@@ -43,18 +43,18 @@ namespace cellmate
 		par  // run in parallel, if OpenMP available and useful
 	};
 
-	// controls the processing order of batch queries
-	enum class QueryOrder
-	{
-		morton, // spatially reorder queries by Morton code before querying
-		input   // process queries in the supplied input order
-	};
-
 	// controls whether input data is copied or read directly
 	enum class PointAccess
 	{
 		cpy, // copy and spatially order positions for contiguous access within cells
 		ref  // read input positions directly, requiring arrays to stay alive and unchanged
+	};
+
+	// controls the processing order of batch queries
+	enum class QueryOrder
+	{
+		morton, // spatially reorder queries by Morton code before querying
+		input   // process queries in the supplied input order
 	};
 
 	// TODO: XML documentation?
