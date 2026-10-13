@@ -17,6 +17,7 @@ namespace cellmate_bench
 		matrix.scenarios.values = {
 			&uniform_volume(),
 			&gradient_volume(),
+			&clustered_volume(),
 			&planar_surface()
 		};
 		matrix.modes.compute_mode = {

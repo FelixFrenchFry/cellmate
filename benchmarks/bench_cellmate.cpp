@@ -3,6 +3,7 @@
 
 #include "bench_matrix.hpp"
 #include "profiles/test.hpp"
+#include "profiles/single.hpp"
 #include "profiles/quick.hpp"
 #include "profiles/balanced.hpp"
 #include "profiles/detailed.hpp"
@@ -288,13 +289,14 @@ int main(int argc, char** argv)
 	const std::string profile = has_profile ? argv[1] : "test";
 	cellmate_bench::BenchmarkMatrix matrix;
 	if (profile == "test") { matrix = cellmate_bench::test_matrix(); }
+	else if (profile == "single") { matrix = cellmate_bench::single_matrix(); }
 	else if (profile == "quick") { matrix = cellmate_bench::quick_matrix(); }
 	else if (profile == "balanced") { matrix = cellmate_bench::balanced_matrix(); }
 	else if (profile == "detailed") { matrix = cellmate_bench::detailed_matrix(); }
 	else if (profile == "heavy") { matrix = cellmate_bench::heavy_matrix(); }
 	else
 	{
-		std::cerr << "usage: cellmate_benchmarks [test|quick|balanced|detailed|heavy] [benchmark options]\n";
+		std::cerr << "usage: cellmate_benchmarks [test|single|quick|balanced|detailed|heavy] [benchmark options]\n";
 		return 1;
 	}
 	if (has_profile)

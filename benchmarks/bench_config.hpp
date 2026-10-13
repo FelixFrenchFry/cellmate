@@ -49,5 +49,6 @@ namespace cellmate_bench
 
 	const Scenario& uniform_volume();
 	const Scenario& gradient_volume();
+	const Scenario& clustered_volume();
 	const Scenario& planar_surface();
 }
