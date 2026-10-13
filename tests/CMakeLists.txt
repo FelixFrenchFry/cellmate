@@ -31,6 +31,17 @@ add_executable(cellmate_tests
 target_link_libraries(cellmate_tests PRIVATE cellmate::cellmate GTest::gtest_main)
 target_compile_features(cellmate_tests PRIVATE cxx_std_17)
 
+# exercise benchmark tooling only when the maintained suite is enabled
+if(CELLMATE_BUILD_BENCHMARKS)
+	target_sources(cellmate_tests PRIVATE
+		test_benchmark_config.cpp
+		../benchmarks/bench_prepare.cpp
+		../benchmarks/scenarios/uniform_volume.cpp
+		../benchmarks/scenarios/planar_surface.cpp
+		../benchmarks/scenarios/gradient_volume.cpp
+	)
+endif()
+
 # optional CPU target flags for backend test builds
 if(CELLMATE_TEST_ARCH_FLAGS)
 	target_compile_options(cellmate_tests PRIVATE ${CELLMATE_TEST_ARCH_FLAGS})

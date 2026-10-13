@@ -1,34 +1,54 @@
 #pragma once
 
-#include <benchmark/benchmark.h>
+#include <cellmate/neighbor_search.hpp>
 
 #include "../helpers/point_cloud.hpp"
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 
 namespace cellmate_bench
 {
+	constexpr double pi = 3.14159265358979323846;
 	constexpr float search_radius = 1.0f;
 
-#ifdef _OPENMP
-	void prepare_parallel(const benchmark::State&);
-#endif
-
-	inline cellmate_helpers::PointCloud make_points(const benchmark::State& state)
+	enum class QueryPlacement
 	{
-		const std::size_t N_points = static_cast<std::size_t>(state.range(0));
-		return cellmate_helpers::make_uniform_cloud(N_points, 67, -5.0f, 5.0f);
-	}
+		points,
+		domain
+	};
 
-	inline void configure(benchmark::internal::Benchmark* bench)
+	struct Config
 	{
-		bench
-			->Arg(1000)
-			->Arg(10000)
-			->Arg(100000)
-			->UseRealTime()
-			->Unit(benchmark::kMicrosecond)
-			->MinTime(1.0)
-			->Repetitions(3);
-	}
+		std::size_t N_points = 1'000'000;
+		std::size_t N_queries = 1'000'000;
+		double N_nominal_avg_nbrs = 32.0; // uniform-distribution estimate (excluding self), actual counts depend on the scenario
+		int N_max_threads = 4;
+		cellmate::ComputeMode compute_mode = cellmate::ComputeMode::par;
+		cellmate::PointAccess point_access = cellmate::PointAccess::cpy;
+		cellmate::QueryOrder query_order = cellmate::QueryOrder::morton;
+		QueryPlacement query_placement = QueryPlacement::points;
+		std::uint32_t rng_seed = 67;
+	};
+
+	struct Workload
+	{
+		cellmate_helpers::PointCloud points, queries;
+		std::array<float, 3> half_extent;
+	};
+
+	struct Scenario
+	{
+		const char* name;
+		Config reference;
+		std::function<Workload(const Config&)> make_workload;
+	};
+
+	Workload prepare_workload(const Scenario& scenario, const Config& config);
+
+	const Scenario& uniform_volume();
+	const Scenario& gradient_volume();
+	const Scenario& planar_surface();
 }
