@@ -3,9 +3,10 @@
 
 #include "bench_matrix.hpp"
 #include "profiles/test.hpp"
-#include "profiles/small.hpp"
-#include "profiles/medium.hpp"
-#include "profiles/large.hpp"
+#include "profiles/quick.hpp"
+#include "profiles/balanced.hpp"
+#include "profiles/detailed.hpp"
+#include "profiles/heavy.hpp"
 #include "../helpers/brute_force.hpp"
 
 #include <algorithm>
@@ -27,6 +28,10 @@ namespace cellmate_bench
 {
 	namespace
 	{
+		// for benchmarks of the regular query() function, a small prefix of the queries
+		// is enough to warm up the per-query storage and per-thread cache
+		constexpr std::size_t N_warmup_queries = 10'000;
+
 #ifdef _OPENMP
 		class OpenMPSettings
 		{
@@ -78,7 +83,7 @@ namespace cellmate_bench
 					search.rebuild(points.x.data(), points.y.data(), points.z.data(),
 						config.N_points, config.compute_mode);
 				};
-				const auto run_queries = [&]()
+				const auto run_queries = [&](std::size_t N_run)
 				{
 					N_neighbors = 0;
 					switch (operation.query_mode)
@@ -86,7 +91,7 @@ namespace cellmate_bench
 					case QueryMode::none:
 						break;
 					case QueryMode::single:
-						for (std::size_t i = 0; i < config.N_queries; i++)
+						for (std::size_t i = 0; i < N_run; i++)
 						{
 							search.query({ queries.x[i], queries.y[i], queries.z[i] }, neighbors);
 							N_neighbors += neighbors.size();
@@ -96,7 +101,7 @@ namespace cellmate_bench
 						break;
 					case QueryMode::batch:
 						search.query_batch(queries.x.data(), queries.y.data(), queries.z.data(),
-							config.N_queries, neighbors, offsets, config.compute_mode, config.query_order);
+							N_run, neighbors, offsets, config.compute_mode, config.query_order);
 						N_neighbors = neighbors.size();
 						break;
 					}
@@ -135,14 +140,16 @@ namespace cellmate_bench
 				};
 
 				// initialize reusable storage and check correctness outside timing
+				// (batches warm up with all queries to size their output and scratch buffers)
 				rebuild();
-				run_queries();
+				run_queries(operation.query_mode == QueryMode::single
+					? (std::min)(config.N_queries, N_warmup_queries) : config.N_queries);
 				validate();
 
 				for (auto _ : state)
 				{
 					if (operation.rebuild_mode == RebuildMode::once) { rebuild(); }
-					run_queries();
+					run_queries(config.N_queries);
 					benchmark::DoNotOptimize(search);
 					benchmark::DoNotOptimize(neighbors.data());
 					benchmark::DoNotOptimize(offsets.data());
@@ -177,6 +184,22 @@ namespace cellmate_bench
 			}
 		}
 
+		// WARNING: assumes 'query()' runs on the calling thread, update when this changes
+		bool uses_compute_mode(const Operation& operation)
+		{
+			return operation.rebuild_mode == RebuildMode::once || operation.query_mode == QueryMode::batch;
+		}
+		// WARNING: assumes only 'query_batch()' takes a query order, update when this changes
+		bool uses_query_order(const Operation& operation)
+		{
+			return operation.query_mode == QueryMode::batch;
+		}
+		// WARNING: assumes 'rebuild()' never reads query positions, update when this changes
+		bool uses_queries(const Operation& operation)
+		{
+			return operation.query_mode != QueryMode::none;
+		}
+
 		template<typename T>
 		void register_sweep(const Scenario* scenario, const Config& reference, const Operation& operation,
 			const char* experiment, const char* parameter_name, T Config::* member,
@@ -204,17 +227,21 @@ namespace cellmate_bench
 		void register_experiments(const Scenario* scenario, Config reference, const Operation& operation,
 			const SweepValues& sweeps, bool& failed)
 		{
+			// WARNING: assumes sequential calls ignore the OpenMP thread count, update when this changes
 			if (reference.compute_mode == cellmate::ComputeMode::seq) { reference.N_max_threads = 1; }
 
 			register_sweep(scenario, reference, operation, "reference", "N",
 				&Config::N_points, { reference.N_points }, failed);
 			register_sweep(scenario, reference, operation, "points", "N",
 				&Config::N_points, sweeps.N_points, failed);
-			register_sweep(scenario, reference, operation, "queries", "N_queries",
-				&Config::N_queries, sweeps.N_queries, failed);
+			if (uses_queries(operation))
+			{
+				register_sweep(scenario, reference, operation, "queries", "N_queries",
+					&Config::N_queries, sweeps.N_queries, failed);
+			}
 			register_sweep(scenario, reference, operation, "neighbors", "N_nominal_avg_nbrs",
 				&Config::N_nominal_avg_nbrs, sweeps.N_nominal_avg_nbrs, failed);
-			if (reference.compute_mode == cellmate::ComputeMode::par)
+			if (reference.compute_mode == cellmate::ComputeMode::par && uses_compute_mode(operation))
 			{
 				register_sweep(scenario, reference, operation, "threads", "N_max_threads",
 					&Config::N_max_threads, sweeps.N_max_threads, failed);
@@ -244,6 +271,11 @@ namespace cellmate_bench
 
 			for (const Operation& operation : operations.values)
 			{
+				// register unused modes only with their first listed value, since other values measure the same work
+				if (!uses_compute_mode(operation) && compute_mode != modes.compute_mode.front()) { continue; }
+				if (!uses_query_order(operation) && query_order != modes.query_order.front()) { continue; }
+				if (!uses_queries(operation) && query_placement != modes.query_placement.front()) { continue; }
+
 				register_experiments(scenario, reference, operation, sweeps, failed);
 			}
 		}
@@ -256,12 +288,13 @@ int main(int argc, char** argv)
 	const std::string profile = has_profile ? argv[1] : "test";
 	cellmate_bench::BenchmarkMatrix matrix;
 	if (profile == "test") { matrix = cellmate_bench::test_matrix(); }
-	else if (profile == "small") { matrix = cellmate_bench::small_matrix(); }
-	else if (profile == "medium") { matrix = cellmate_bench::medium_matrix(); }
-	else if (profile == "large") { matrix = cellmate_bench::large_matrix(); }
+	else if (profile == "quick") { matrix = cellmate_bench::quick_matrix(); }
+	else if (profile == "balanced") { matrix = cellmate_bench::balanced_matrix(); }
+	else if (profile == "detailed") { matrix = cellmate_bench::detailed_matrix(); }
+	else if (profile == "heavy") { matrix = cellmate_bench::heavy_matrix(); }
 	else
 	{
-		std::cerr << "usage: cellmate_benchmarks [test|small|medium|large] [benchmark options]\n";
+		std::cerr << "usage: cellmate_benchmarks [test|quick|balanced|detailed|heavy] [benchmark options]\n";
 		return 1;
 	}
 	if (has_profile)
@@ -271,8 +304,8 @@ int main(int argc, char** argv)
 	}
 
 	// defaults before user arguments, so explicit flags and environment variables take precedence
-	char repetitions[] = "--benchmark_repetitions=3";
-	char min_time[] = "--benchmark_min_time=1s";
+	char repetitions[] = "--benchmark_repetitions=1";
+	char min_time[] = "--benchmark_min_time=0.5s";
 	std::vector<char*> arguments{ argv[0] };
 	if (!std::getenv("BENCHMARK_REPETITIONS")) { arguments.push_back(repetitions); }
 	if (!std::getenv("BENCHMARK_MIN_TIME")) { arguments.push_back(min_time); }
