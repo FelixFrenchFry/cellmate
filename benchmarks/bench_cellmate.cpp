@@ -1,15 +1,21 @@
 #include <cellmate/neighbor_search.hpp>
 #include <benchmark/benchmark.h>
 
-#include "bench_config.hpp"
+#include "bench_matrix.hpp"
+#include "profiles/test.hpp"
+#include "profiles/small.hpp"
+#include "profiles/medium.hpp"
+#include "profiles/large.hpp"
 #include "../helpers/brute_force.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <exception>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #ifdef _OPENMP
@@ -20,106 +26,6 @@ namespace cellmate_bench
 {
 	namespace
 	{
-		enum class RebuildMode
-		{
-			none,
-			once
-		};
-
-		enum class QueryMode
-		{
-			none,
-			single,
-			batch
-		};
-
-		struct Operation
-		{
-			const char* name;
-			RebuildMode rebuild_mode;
-			QueryMode query_mode;
-		};
-
-		struct ScenarioValues
-		{
-			std::vector<const Scenario*> values{
-				&uniform_volume(),
-				&gradient_volume(),
-				&planar_surface()
-			};
-		};
-
-		struct ModeValues
-		{
-			std::vector<cellmate::ComputeMode> compute_mode{
-				cellmate::ComputeMode::seq,
-				cellmate::ComputeMode::par
-			};
-			std::vector<cellmate::PointAccess> point_access{
-				cellmate::PointAccess::cpy
-			};
-			std::vector<cellmate::QueryOrder> query_order{
-				cellmate::QueryOrder::morton
-			};
-			std::vector<QueryPlacement> query_placement{
-				QueryPlacement::points
-			};
-		};
-
-		struct OperationValues
-		{
-			std::vector<Operation> values{
-				{ "rebuild",             RebuildMode::once, QueryMode::none },
-				{ "query",               RebuildMode::none, QueryMode::single },
-				{ "query_batch",         RebuildMode::none, QueryMode::batch },
-				{ "rebuild_query",       RebuildMode::once, QueryMode::single },
-				{ "rebuild_query_batch", RebuildMode::once, QueryMode::batch }
-			};
-		};
-
-		struct SweepValues
-		{
-			std::vector<std::size_t> N_points{
-				1,
-				10,
-				100,
-				1000,
-				10000,
-				100000,
-				1000000, // 1 mio
-				10000000
-			};
-			std::vector<std::size_t> N_queries{
-				1,
-				10,
-				100,
-				1000,
-				10000,
-				100000,
-				1000000, // 1 mio
-				10000000
-			};
-			std::vector<double> N_nominal_avg_nbrs{
-				0.1,
-				0.5,
-				1.0,
-				2.0,
-				4.0,
-				8.0,
-				16.0,
-				32.0,
-				64.0,
-				128.0,
-				256.0
-			};
-			std::vector<int> N_max_threads{
-				1,
-				2,
-				4,
-				8
-			};
-		};
-
 #ifdef _OPENMP
 		class OpenMPSettings
 		{
@@ -315,12 +221,12 @@ namespace cellmate_bench
 		}
 	}
 
-	void register_benchmarks(bool& failed)
+	void register_benchmarks(const BenchmarkMatrix& matrix, bool& failed)
 	{
-		const SweepValues sweeps;
-		const ModeValues modes;
-		const ScenarioValues scenarios;
-		const OperationValues operations;
+		const SweepValues& sweeps = matrix.sweeps;
+		const ModeValues& modes = matrix.modes;
+		const ScenarioValues& scenarios = matrix.scenarios;
+		const OperationValues& operations = matrix.operations;
 
 		// iterate over entire parameter matrix
 		for (const Scenario* scenario : scenarios.values)
@@ -329,7 +235,7 @@ namespace cellmate_bench
 		for (auto query_order : modes.query_order)
 		for (auto query_placement : modes.query_placement)
 		{
-			Config reference;
+			Config reference = matrix.reference;
 			reference.compute_mode = compute_mode;
 			reference.point_access = point_access;
 			reference.query_order = query_order;
@@ -345,10 +251,28 @@ namespace cellmate_bench
 
 int main(int argc, char** argv)
 {
+	const bool has_profile = argc > 1 && argv[1][0] != '-';
+	const std::string profile = has_profile ? argv[1] : "test";
+	cellmate_bench::BenchmarkMatrix matrix;
+	if (profile == "test") { matrix = cellmate_bench::test_matrix(); }
+	else if (profile == "small") { matrix = cellmate_bench::small_matrix(); }
+	else if (profile == "medium") { matrix = cellmate_bench::medium_matrix(); }
+	else if (profile == "large") { matrix = cellmate_bench::large_matrix(); }
+	else
+	{
+		std::cerr << "usage: cellmate_benchmarks [test|small|medium|large] [benchmark options]\n";
+		return 1;
+	}
+	if (has_profile)
+	{
+		std::copy(argv + 2, argv + argc + 1, argv + 1);
+		argc--;
+	}
 	benchmark::Initialize(&argc, argv);
 	if (benchmark::ReportUnrecognizedArguments(argc, argv)) { return 1; }
+	benchmark::AddCustomContext("profile", profile);
 	bool failed = false;
-	cellmate_bench::register_benchmarks(failed);
+	cellmate_bench::register_benchmarks(matrix, failed);
 	benchmark::RunSpecifiedBenchmarks();
 	benchmark::Shutdown();
 	return failed ? 1 : 0;
