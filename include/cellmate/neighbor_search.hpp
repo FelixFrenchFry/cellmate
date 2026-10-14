@@ -111,7 +111,7 @@ namespace cellmate
 
 #ifdef _OPENMP
 			// select sequential or parallel version on execution mode and heuristics
-			const int N_threads = select_thread_count(N_points, exec, 4096);
+			const int N_threads = select_thread_count(N_points, exec, N_rebuild_points_min_par_);
 			if (exec == ComputeMode::par && N_threads > 1 &&
 				N_points <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
@@ -202,7 +202,8 @@ namespace cellmate
 
 #ifdef _OPENMP
 			// select sequential or parallel version on execution mode and heuristics
-			const int N_threads = select_thread_count(N_queries, exec, 256);
+			// TODO: use proper cost metric that includes neighbor density (derived from number of points and number of occupied cells)?
+			const int N_threads = select_thread_count(N_queries, exec, N_batch_queries_min_par_);
 			if (exec == ComputeMode::par && N_threads > 1 &&
 				N_queries <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
@@ -303,7 +304,14 @@ namespace cellmate
 		uint32_t cell_prefix_shift_ = 64;
 
 		static constexpr std::size_t N_nbr_buffer_size_ = 64;
-		static constexpr std::size_t N_queries_min_staged_ = 4;
+		static constexpr std::size_t N_queries_min_staged_ = 3;
+		// minimum sizes for running parallelized operations with the full team instead of sequentially
+		static constexpr std::size_t N_rebuild_points_min_par_ = 8192;
+		static constexpr std::size_t N_radix_sort_entries_min_par_ = 8192;
+		static constexpr std::size_t N_batch_queries_min_par_ = 128;
+		// bounds for entries per chunk of parallel radix sorts and cell table construction
+		static constexpr std::size_t N_chunk_entries_min_ = 1024;
+		static constexpr std::size_t N_chunk_entries_max_ = 4096;
 
 		std::shared_ptr<const QueryContext::BuildId> build_id_;
 
@@ -868,10 +876,10 @@ namespace cellmate
 
 				// sort query indices by Morton key
 				const uint64_t max_key = (morton_key(last_cell_[0], last_cell_[1], last_cell_[2]) << 1) | 1u;
-				const int N_sort_threads = select_thread_count(query_order.size(), ComputeMode::par, 4096);
-				if (N_sort_threads > 1)
+				// TODO: come up with proper cost measure heuristic to decide between seq and parallel?
+				if (query_order.size() >= N_radix_sort_entries_min_par_)
 				{
-					sort_point_order_par(query_order, scratch.query_order_scratch_, scratch.radix_offsets_, max_key, N_sort_threads);
+					sort_point_order_par(query_order, scratch.query_order_scratch_, scratch.radix_offsets_, max_key, N_threads);
 				}
 				else
 				{
@@ -972,7 +980,7 @@ namespace cellmate
 			copied_ordered_indices_.resize(N_points);
 
 #ifdef _OPENMP
-			const int N_threads = select_thread_count(N_points, exec, 4096);
+			const int N_threads = select_thread_count(N_points, exec, N_rebuild_points_min_par_);
 			if (N_threads > 1 && N_points <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
 				#pragma omp parallel for schedule(static) num_threads(N_threads)
@@ -1039,17 +1047,33 @@ namespace cellmate
 		}
 
 #ifdef _OPENMP
-		// choose how many threads to use for parallel work, based on heuristics
-		static int select_thread_count(std::size_t N_items, ComputeMode exec, int min_items_per_thread)
+		// chooses between sequential or parallel execution with full thread count, based on a minimum item count heuristic
+		// (never selects a smaller team, since changing team sizes between parallel regions is expensive)
+		static int select_thread_count(std::size_t N_items, ComputeMode exec, std::size_t N_items_min_par)
 		{
-			assert(min_items_per_thread > 0);
-			if (exec != ComputeMode::par || omp_in_parallel()) { return 1; }
+			assert(N_items_min_par > 0);
+			if (exec != ComputeMode::par || omp_in_parallel() || N_items < N_items_min_par) { return 1; }
 
-			const int max_threads = omp_get_max_threads();
-			const int N_threads = static_cast<int>(
-				(std::min)(N_items / min_items_per_thread, static_cast<std::size_t>(max_threads)));
+			return omp_get_max_threads();
+		}
 
-			return (std::max)(1, N_threads);
+		// chooses the entries per chunk, aiming for one chunk per thread, with chunks of equal size
+		// (bounds limit per-chunk overhead for small chunks, and keep large inputs at the largest chunk size,
+		// while equalizing chunk sizes may undercut the lower bound slightly)
+		static std::size_t select_chunk_size(std::size_t N_entries, int N_threads)
+		{
+			assert(N_threads > 0);
+			if (N_entries == 0) { return N_chunk_entries_min_; }
+
+			// one chunk per thread, within bounds
+			const std::size_t N_chunks_target = static_cast<std::size_t>(N_threads);
+			std::size_t chunk_size = N_entries / N_chunks_target + (N_entries % N_chunks_target != 0);
+			if (chunk_size < N_chunk_entries_min_) { chunk_size = N_chunk_entries_min_; }
+			if (chunk_size > N_chunk_entries_max_) { chunk_size = N_chunk_entries_max_; }
+
+			// equalize chunk sizes
+			const std::size_t N_chunks = N_entries / chunk_size + (N_entries % chunk_size != 0);
+			return N_entries / N_chunks + (N_entries % N_chunks != 0);
 		}
 #endif
 
@@ -1116,8 +1140,16 @@ namespace cellmate
 				point_order_[i] = { morton_key(cx, cy, cz), static_cast<std::size_t>(i) };
 			}
 
-			sort_point_order_par(point_order_, point_order_scratch_, radix_offsets_,
-				morton_key(last_cell_[0], last_cell_[1], last_cell_[2]), N_threads);
+			if (point_order_.size() >= N_radix_sort_entries_min_par_)
+			{
+				sort_point_order_par(point_order_, point_order_scratch_, radix_offsets_,
+					morton_key(last_cell_[0], last_cell_[1], last_cell_[2]), N_threads);
+			}
+			else
+			{
+				sort_point_order_seq(point_order_, point_order_scratch_,
+					morton_key(last_cell_[0], last_cell_[1], last_cell_[2]));
+			}
 			build_cell_table_par(N_threads);
 		}
 #endif
@@ -1142,11 +1174,9 @@ namespace cellmate
 			}
 
 			// divide entries into chunks for parallel counting and scattering
-			const std::size_t chunk_size = 4096; // TODO: find better heuristic?
+			const std::size_t chunk_size = select_chunk_size(N_points, N_threads);
 			const std::ptrdiff_t N_chunks = static_cast<std::ptrdiff_t>(
 				N_points / chunk_size + (N_points % chunk_size != 0));
-			const int N_sort_threads = static_cast<int>(
-				(std::min)(static_cast<std::ptrdiff_t>(N_threads), N_chunks));
 
 			// prepare output buffer and per-chunk byte counts
 			point_order_scratch.resize(N_points);
@@ -1155,7 +1185,8 @@ namespace cellmate
 			PointEntry* src = point_order.data();
 			PointEntry* dst = point_order_scratch.data();
 
-			#pragma omp parallel num_threads(N_sort_threads)
+			// parallel region for sorting pipeline
+			#pragma omp parallel num_threads(N_threads)
 			{
 				// sort bytes from least to most significant
 				for (uint32_t pass = 0; pass < N_passes; pass++)
@@ -1235,15 +1266,13 @@ namespace cellmate
 			const std::size_t N_points = point_order_.size();
 
 			// divide entries into chunks for parallel counting and filling
-			const std::size_t chunk_size = 4096;
+			const std::size_t chunk_size = select_chunk_size(N_points, N_threads);
 			const std::ptrdiff_t N_chunks = static_cast<std::ptrdiff_t>(
 				N_points / chunk_size + (N_points % chunk_size != 0));
-			const int N_build_threads = static_cast<int>(
-				(std::min)(static_cast<std::ptrdiff_t>(N_threads), N_chunks));
 			cell_chunk_offsets_.resize(N_chunks);
 
 			// count cell starts separately for each chunk
-			#pragma omp parallel for schedule(static) num_threads(N_build_threads)
+			#pragma omp parallel for schedule(static) num_threads(N_threads)
 			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 			{
 				const std::size_t begin = static_cast<std::size_t>(chunk) * chunk_size;
@@ -1271,7 +1300,7 @@ namespace cellmate
 			cell_starts_.resize(N_cells + 1);
 
 			// fill each chunk's output range while preserving cell order
-			#pragma omp parallel for schedule(static) num_threads(N_build_threads)
+			#pragma omp parallel for schedule(static) num_threads(N_threads)
 			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 			{
 				const std::size_t begin = static_cast<std::size_t>(chunk) * chunk_size;

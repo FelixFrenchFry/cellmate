@@ -787,7 +787,7 @@ TEST(NeighborSearchQueryBatch, QueryOrdersPreserveRowsAcrossRepeatedBatches)
 		cellmate::NeighborSearch search(1.0f, storage);
 		search.rebuild(x, y, z, 5, cellmate::ComputeMode::seq);
 		std::vector<std::size_t> neighbors{ 99 }, offsets{ 99 };
-		for (std::size_t N_queries : { 8193u, 1u, 0u, 513u, 8193u })
+		for (std::size_t N_queries : { 8193u, 1u, 0u, 513u, 16385u, 8193u })
 		{
 			std::vector<float> query_x(N_queries), query_y(N_queries, 0.0f), query_z(N_queries, 0.0f);
 			for (std::size_t i = 0; i < N_queries; i++)
@@ -819,6 +819,35 @@ TEST(NeighborSearchQueryBatch, QueryOrdersPreserveRowsAcrossRepeatedBatches)
 					ASSERT_EQ(offsets.back(), neighbors.size());
 					ASSERT_EQ(neighbors.size(), offset);
 				}
+			}
+		}
+	}
+}
+
+// verifies that batches large enough for the parallel query sort match unsorted sequential batches
+// (radii select even and odd radix pass counts, and queries extend beyond the grid)
+TEST(NeighborSearchQueryBatch, ParallelQuerySortMatchesInputOrder)
+{
+	const auto points = cellmate_helpers::make_uniform_cloud(10003, 91, -5.0f, 5.0f);
+	const auto queries = cellmate_helpers::make_uniform_cloud(20011, 67, -6.0f, 6.0f);
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		for (float radius : { 0.4f, 0.1f })
+		{
+			SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage) << ", 'radius' = " << radius);
+			cellmate::NeighborSearch search(radius, storage);
+			search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size());
+
+			std::vector<std::size_t> expected_neighbors, expected_offsets, neighbors, offsets;
+			search.query_batch(queries.x.data(), queries.y.data(), queries.z.data(), queries.x.size(),
+				expected_neighbors, expected_offsets, cellmate::ComputeMode::seq, cellmate::QueryOrder::input);
+			ASSERT_GT(expected_neighbors.size(), 0u);
+			for (cellmate::ComputeMode execution : { cellmate::ComputeMode::par, cellmate::ComputeMode::seq })
+			{
+				search.query_batch(queries.x.data(), queries.y.data(), queries.z.data(), queries.x.size(),
+					neighbors, offsets, execution, cellmate::QueryOrder::morton);
+				ASSERT_EQ(offsets, expected_offsets) << "'execution' = " << static_cast<int>(execution);
+				ASSERT_EQ(neighbors, expected_neighbors) << "'execution' = " << static_cast<int>(execution);
 			}
 		}
 	}
