@@ -47,9 +47,9 @@ namespace cellmate_bench
 			1000000, // 1 mio
 		};
 		matrix.sweeps.N_target_avg_nbrs = {
-			2.0,
+			0.5,
 			8.0,
-			32.0
+			128.0
 		};
 		matrix.sweeps.N_max_threads = {
 			// nothing

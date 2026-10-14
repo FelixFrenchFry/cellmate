@@ -7,8 +7,8 @@ namespace cellmate_bench
 	inline BenchmarkMatrix quick_matrix()
 	{
 		BenchmarkMatrix matrix;
-		matrix.reference.N_points = 250'000;
-		matrix.reference.N_queries = 250'000;
+		matrix.reference.N_points = 100'000;
+		matrix.reference.N_queries = 100'000;
 		matrix.reference.N_target_avg_nbrs = 32.0;
 		matrix.reference.N_max_threads = 8;
 		matrix.reference.rng_seed = 67;
@@ -54,9 +54,7 @@ namespace cellmate_bench
 		};
 		matrix.sweeps.N_target_avg_nbrs = {
 			0.5,
-			2.0,
 			8.0,
-			32.0,
 			128.0
 		};
 		matrix.sweeps.N_max_threads = {

@@ -306,7 +306,7 @@ int main(int argc, char** argv)
 	}
 
 	// defaults before user arguments, so explicit flags and environment variables take precedence
-	char repetitions[] = "--benchmark_repetitions=1";
+	char repetitions[] = "--benchmark_repetitions=3";
 	char min_time[] = "--benchmark_min_time=0.5s";
 	std::vector<char*> arguments{ argv[0] };
 	if (!std::getenv("BENCHMARK_REPETITIONS")) { arguments.push_back(repetitions); }
