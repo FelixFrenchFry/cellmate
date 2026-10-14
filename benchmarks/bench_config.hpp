@@ -56,7 +56,10 @@ namespace cellmate_bench
 	}
 
 	const Scenario& uniform_volume();
+	const Scenario& anisotropic_volume();
 	const Scenario& gradient_volume();
 	const Scenario& clustered_volume();
+	const Scenario& lattice_volume();
 	const Scenario& planar_surface();
+	const Scenario& spherical_surface();
 }

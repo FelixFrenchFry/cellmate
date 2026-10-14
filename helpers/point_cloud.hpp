@@ -17,6 +17,22 @@ namespace cellmate_helpers
 		std::vector<float> x, y, z;
 	};
 
+	// sample an index in [0, N_points) with a fixed mapping across standard libraries
+	inline std::size_t random_index(std::mt19937& random, std::size_t N_points)
+	{
+		const std::uint64_t bound = N_points;
+		const std::uint64_t threshold = (std::uint64_t(0) - bound) % bound;
+		for (;;)
+		{
+			const std::uint64_t first = random();
+			const std::uint64_t bits = (first << 32) | random();
+			if (bits >= threshold)
+			{
+				return std::size_t(bits % bound);
+			}
+		}
+	}
+
 	// generate points in ['min', 'max') along each axis
 	inline PointCloud make_uniform_cloud(std::size_t N_points, uint32_t seed, float min, float max)
 	{

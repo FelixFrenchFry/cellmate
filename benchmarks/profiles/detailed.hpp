@@ -7,8 +7,8 @@ namespace cellmate_bench
 	inline BenchmarkMatrix detailed_matrix()
 	{
 		BenchmarkMatrix matrix;
-		matrix.reference.N_points = 1'000'000;
-		matrix.reference.N_queries = 1'000'000;
+		matrix.reference.N_points = 500'000;
+		matrix.reference.N_queries = 500'000;
 		matrix.reference.N_target_avg_nbrs = 32.0;
 		matrix.reference.N_max_threads = 8;
 		matrix.reference.rng_seed = 67;
@@ -16,9 +16,12 @@ namespace cellmate_bench
 		// combined sweeps through the parameter space
 		matrix.scenarios.values = {
 			&uniform_volume(),
+			&anisotropic_volume(),
 			&gradient_volume(),
 			&clustered_volume(),
-			&planar_surface()
+			&lattice_volume(),
+			&planar_surface(),
+			&spherical_surface()
 		};
 		matrix.modes.compute_mode = {
 			cellmate::ComputeMode::seq,

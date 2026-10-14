@@ -15,21 +15,6 @@ namespace cellmate_bench
 {
 	namespace
 	{
-		std::size_t random_index(std::mt19937& random, std::size_t N_points)
-		{
-			const std::uint64_t bound = N_points;
-			const std::uint64_t threshold = (std::uint64_t(0) - bound) % bound;
-			for (;;)
-			{
-				const std::uint64_t first = random();
-				const std::uint64_t bits = (first << 32) | random();
-				if (bits >= threshold)
-				{
-					return std::size_t(bits % bound);
-				}
-			}
-		}
-
 		cellmate_helpers::PointCloud make_queries(const cellmate_helpers::PointCloud& points,
 			const std::array<float, 3>& half_extent, const Config& config)
 		{
@@ -64,7 +49,7 @@ namespace cellmate_bench
 			std::mt19937 random(seed);
 			for (std::size_t i = 0; i < config.N_queries; i++)
 			{
-				const std::size_t idx = random_index(random, config.N_points);
+				const std::size_t idx = cellmate_helpers::random_index(random, config.N_points);
 				queries.x[i] = points.x[idx];
 				queries.y[i] = points.y[idx];
 				queries.z[i] = points.z[idx];
@@ -73,7 +58,7 @@ namespace cellmate_bench
 		}
 
 		// returns the search radius at which the calibration queries achieve the targeted average neighbor count
-		// (midway between the last neighbor inside and the first one outside, so none lies exactly on the cutoff)
+		// (choosing the closest achievable count with ties, midway between distinct distances so none lies on the cutoff)
 		double calibrate_radius(const cellmate_helpers::PointCloud& points,
 			const std::array<float, 3>& half_extent, const Config& config)
 		{
@@ -108,15 +93,31 @@ namespace cellmate_bench
 					}
 				}
 
-				// radius midway between the last included and first excluded distance
+				// include or exclude an entire distance group, choosing the closer count
 				if (distances_squ.size() > N_target)
 				{
 					std::nth_element(distances_squ.begin(), distances_squ.begin() + N_target, distances_squ.end());
-					const double outside = distances_squ[N_target];
-					const double inside = N_target == 0
-						? 0.0
-						: *std::max_element(distances_squ.begin(), distances_squ.begin() + N_target);
-					return (std::sqrt(inside) + std::sqrt(outside)) / 2;
+					const double boundary = distances_squ[N_target];
+					std::size_t N_inside = 0, N_equal = 0;
+					double inside = 0, outside = radius * radius;
+					for (double distance : distances_squ)
+					{
+						if (distance < boundary)
+						{
+							N_inside++;
+							inside = (std::max)(inside, distance);
+						}
+						else if (distance == boundary) { N_equal++; }
+						else { outside = (std::min)(outside, distance); }
+					}
+					if (boundary > 0 && N_target - N_inside <= N_inside + N_equal - N_target)
+					{
+						return (std::sqrt(inside) + std::sqrt(boundary)) / 2;
+					}
+					if (outside > boundary)
+					{
+						return (std::sqrt(boundary) + std::sqrt(outside)) / 2;
+					}
 				}
 
 				// unreachable targets include every point

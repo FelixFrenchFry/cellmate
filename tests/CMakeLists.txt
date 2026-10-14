@@ -37,9 +37,12 @@ if(CELLMATE_BUILD_BENCHMARKS)
 		test_benchmark_config.cpp
 		../benchmarks/bench_prepare.cpp
 		../benchmarks/scenarios/uniform_volume.cpp
+		../benchmarks/scenarios/anisotropic_volume.cpp
 		../benchmarks/scenarios/planar_surface.cpp
 		../benchmarks/scenarios/gradient_volume.cpp
 		../benchmarks/scenarios/clustered_volume.cpp
+		../benchmarks/scenarios/lattice_volume.cpp
+		../benchmarks/scenarios/spherical_surface.cpp
 	)
 endif()
 

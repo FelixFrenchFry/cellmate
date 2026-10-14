@@ -9,19 +9,22 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <vector>
 
 // verifies repeatable generation, geometry and independence from workload settings
 TEST(BenchmarkScenarios, CloudsAreDeterministic)
 {
-	for (const auto* scenario : { &cellmate_bench::uniform_volume(), &cellmate_bench::gradient_volume(),
-		&cellmate_bench::clustered_volume(), &cellmate_bench::planar_surface() })
+	for (const auto* scenario : { &cellmate_bench::uniform_volume(), &cellmate_bench::anisotropic_volume(),
+		&cellmate_bench::gradient_volume(), &cellmate_bench::clustered_volume(), &cellmate_bench::lattice_volume(),
+		&cellmate_bench::planar_surface(), &cellmate_bench::spherical_surface() })
 	{
 		SCOPED_TRACE(scenario->name);
 		cellmate_bench::Config config;
 		config.N_points = 64;
-		const auto points = scenario->make_workload(config).points;
+		const auto workload = scenario->make_workload(config);
+		const auto& points = workload.points;
 		config.N_queries = 97;
 		config.N_max_threads = 1;
 		config.compute_mode = cellmate::ComputeMode::seq;
@@ -36,25 +39,75 @@ TEST(BenchmarkScenarios, CloudsAreDeterministic)
 		EXPECT_EQ(points.y, repeated.y);
 		EXPECT_EQ(points.z, repeated.z);
 
+		// original scenarios derive their extents from the reference cube or square, newer ones are checked separately
 		const bool planar = scenario == &cellmate_bench::planar_surface();
-		const float half_side = planar
-			? float(std::sqrt(config.N_points * 3.14159265358979323846 / config.N_target_avg_nbrs)) / 2
-			: float(std::cbrt(config.N_points * (4.0 / 3) * 3.14159265358979323846 / config.N_target_avg_nbrs)) / 2;
+		const bool spherical = scenario == &cellmate_bench::spherical_surface();
+		if (scenario == &cellmate_bench::uniform_volume() || scenario == &cellmate_bench::gradient_volume() ||
+			scenario == &cellmate_bench::clustered_volume() || planar)
+		{
+			const float half_side = planar
+				? float(std::sqrt(config.N_points * 3.14159265358979323846 / config.N_target_avg_nbrs)) / 2
+				: float(std::cbrt(config.N_points * (4.0 / 3) * 3.14159265358979323846 / config.N_target_avg_nbrs)) / 2;
+			EXPECT_FLOAT_EQ(workload.half_extent[0], half_side);
+			EXPECT_FLOAT_EQ(workload.half_extent[1], half_side);
+			EXPECT_FLOAT_EQ(workload.half_extent[2], planar ? 0.0f : half_side);
+		}
+
+		// boxes exclude their upper extent, sphere points may lie on it
 		for (std::size_t i = 0; i < config.N_points; i++)
 		{
-			EXPECT_GE(points.x[i], -half_side);
-			EXPECT_LT(points.x[i], half_side);
-			EXPECT_GE(points.y[i], -half_side);
-			EXPECT_LT(points.y[i], half_side);
-			if (planar) { EXPECT_FLOAT_EQ(points.z[i], 0.0f); }
-			else
+			const std::array<float, 3> position{ points.x[i], points.y[i], points.z[i] };
+			for (std::size_t axis = 0; axis < position.size(); axis++)
 			{
-				EXPECT_GE(points.z[i], -half_side);
-				EXPECT_LT(points.z[i], half_side);
+				const float limit = workload.half_extent[axis];
+				EXPECT_GE(position[axis], -limit);
+				if (spherical) { EXPECT_LE(position[axis], limit); }
+				else if (planar && axis == 2) { EXPECT_FLOAT_EQ(position[axis], 0.0f); }
+				else { EXPECT_LT(position[axis], limit); }
 			}
 		}
 		config.rng_seed++;
 		EXPECT_NE(points.x, scenario->make_workload(config).points.x);
+	}
+}
+
+// unequal extents preserve the reference volume and uniform sampling along every axis
+TEST(BenchmarkScenarios, AnisotropicVolumePreservesAspectRatio)
+{
+	cellmate_bench::Config config;
+	config.N_points = 10000;
+	const auto workload = cellmate_bench::anisotropic_volume().make_workload(config);
+	const auto uniform = cellmate_bench::uniform_volume().make_workload(config);
+	EXPECT_NEAR(double(workload.half_extent[0]) / workload.half_extent[1], 64, 0.00001);
+	EXPECT_FLOAT_EQ(workload.half_extent[1], workload.half_extent[2]);
+	double volume_ratio = 1;
+	const std::array<const std::vector<float>*, 3> axes{ &workload.points.x, &workload.points.y, &workload.points.z };
+	for (std::size_t axis = 0; axis < axes.size(); axis++)
+	{
+		const double limit = workload.half_extent[axis];
+		volume_ratio *= limit / uniform.half_extent[axis];
+		ASSERT_EQ(axes[axis]->size(), config.N_points);
+		for (float value : *axes[axis])
+		{
+			EXPECT_GE(value, -limit);
+			EXPECT_LT(value, limit);
+		}
+		for (double fraction : { -0.5, 0.0, 0.5 })
+		{
+			const auto count = std::count_if(axes[axis]->begin(), axes[axis]->end(),
+				[limit, fraction](float value) { return value < limit * fraction; });
+			EXPECT_NEAR(double(count) / config.N_points, (fraction + 1) / 2, 0.015);
+		}
+	}
+	EXPECT_NEAR(volume_ratio, 1, 0.000001);
+	config.N_points = config.N_queries = 64;
+	config.N_target_avg_nbrs = 8;
+	for (auto placement : { cellmate_bench::QueryPlacement::points, cellmate_bench::QueryPlacement::domain })
+	{
+		config.query_placement = placement;
+		const auto calibrated = cellmate_bench::prepare_workload(cellmate_bench::anisotropic_volume(), config);
+		EXPECT_NEAR(double(calibrated.half_extent[0]) / calibrated.half_extent[1], 64, 0.00001);
+		EXPECT_FLOAT_EQ(calibrated.half_extent[1], calibrated.half_extent[2]);
 	}
 }
 
@@ -140,14 +193,76 @@ TEST(BenchmarkScenarios, ClusteredVolumeHasDensePockets)
 	EXPECT_GT(empty_queries, config.N_queries / 4);
 }
 
+// arbitrary point counts select distinct lattice sites and randomize their storage order
+TEST(BenchmarkScenarios, LatticeUsesDistinctShuffledSites)
+{
+	for (std::size_t N_points : { 1, 2, 8, 10, 27, 64, 100, 125 })
+	{
+		SCOPED_TRACE(N_points);
+		cellmate_bench::Config config;
+		config.N_points = N_points;
+		const auto workload = cellmate_bench::lattice_volume().make_workload(config);
+		std::size_t N_axis = 1;
+		while (N_axis * N_axis * N_axis < N_points) { N_axis++; }
+		EXPECT_FLOAT_EQ(workload.half_extent[0], float(N_axis) / 2);
+		ASSERT_EQ(workload.points.x.size(), N_points);
+		ASSERT_EQ(workload.points.y.size(), N_points);
+		ASSERT_EQ(workload.points.z.size(), N_points);
+		std::set<std::array<float, 3>> sites;
+		std::vector<std::size_t> indices;
+		for (std::size_t i = 0; i < N_points; i++)
+		{
+			const std::array<float, 3> site{ workload.points.x[i] + float(N_axis) / 2 - 0.5f,
+				workload.points.y[i] + float(N_axis) / 2 - 0.5f,
+				workload.points.z[i] + float(N_axis) / 2 - 0.5f };
+			for (float value : site)
+			{
+				EXPECT_FLOAT_EQ(value, std::round(value));
+				EXPECT_GE(value, 0);
+				EXPECT_LT(value, float(N_axis));
+			}
+			sites.insert(site);
+			indices.push_back(std::size_t(site[0]) + N_axis * (std::size_t(site[1]) + N_axis * std::size_t(site[2])));
+		}
+		EXPECT_EQ(sites.size(), N_points);
+		if (N_points >= 8) { EXPECT_FALSE(std::is_sorted(indices.begin(), indices.end())); }
+	}
+}
+
+// constant radius and uniform coordinate marginals distinguish area sampling from uniform latitude
+TEST(BenchmarkScenarios, SphereSamplesUniformSurfaceArea)
+{
+	cellmate_bench::Config config;
+	config.N_points = 10000;
+	const auto workload = cellmate_bench::spherical_surface().make_workload(config);
+	const double radius = workload.half_extent[0];
+	EXPECT_FLOAT_EQ(float(radius), workload.half_extent[1]);
+	EXPECT_FLOAT_EQ(float(radius), workload.half_extent[2]);
+	for (std::size_t i = 0; i < config.N_points; i++)
+	{
+		const double x = workload.points.x[i], y = workload.points.y[i], z = workload.points.z[i];
+		EXPECT_NEAR((x * x + y * y + z * z) / (radius * radius), 1, 0.000001);
+	}
+	for (const auto* coordinates : { &workload.points.x, &workload.points.y, &workload.points.z })
+	for (double fraction : { -0.5, 0.0, 0.5 })
+	{
+		const auto count = std::count_if(coordinates->begin(), coordinates->end(),
+			[radius, fraction](float value) { return value < radius * fraction; });
+		EXPECT_NEAR(double(count) / config.N_points, (fraction + 1) / 2, 0.015);
+	}
+}
+
 // calibrated workloads reach the target average neighbors (excluding self) with the fixed search radius
 TEST(BenchmarkWorkloads, TargetCountIsReached)
 {
-	for (const auto* scenario : { &cellmate_bench::uniform_volume(), &cellmate_bench::gradient_volume(),
-		&cellmate_bench::clustered_volume(), &cellmate_bench::planar_surface() })
+	for (const auto* scenario : { &cellmate_bench::uniform_volume(), &cellmate_bench::anisotropic_volume(),
+		&cellmate_bench::gradient_volume(), &cellmate_bench::clustered_volume(), &cellmate_bench::lattice_volume(),
+		&cellmate_bench::planar_surface(), &cellmate_bench::spherical_surface() })
 	for (auto placement : { cellmate_bench::QueryPlacement::points, cellmate_bench::QueryPlacement::domain })
 	for (double target : { 0.5, 32.0 })
 	{
+		// point queries on a lattice have discrete shells, checked separately
+		if (scenario == &cellmate_bench::lattice_volume() && placement == cellmate_bench::QueryPlacement::points) { continue; }
 		SCOPED_TRACE(scenario->name);
 		SCOPED_TRACE(int(placement));
 		SCOPED_TRACE(target);
@@ -165,6 +280,27 @@ TEST(BenchmarkWorkloads, TargetCountIsReached)
 			config.N_queries, neighbors, offsets);
 		const double N_self = placement == cellmate_bench::QueryPlacement::points ? 1 : 0;
 		EXPECT_NEAR(double(neighbors.size()) / config.N_queries - N_self, target, 0.005 * target);
+	}
+}
+
+// tied distances choose the nearer complete shell instead of cutting through it
+TEST(BenchmarkWorkloads, TiedDistancesUseNearestCount)
+{
+	for (const auto& target : { std::array<double, 2>{ 1, 0 }, { 2, 3 }, { 4, 3 }, { 5, 6 } })
+	{
+		SCOPED_TRACE(target[0]);
+		cellmate_bench::Config config;
+		config.N_points = config.N_queries = 8;
+		config.N_target_avg_nbrs = target[0];
+		const auto workload = cellmate_bench::prepare_workload(cellmate_bench::lattice_volume(), config);
+		std::vector<std::size_t> neighbors;
+		for (std::size_t i = 0; i < config.N_queries; i++)
+		{
+			cellmate_helpers::brute_force(workload.points.x.data(), workload.points.y.data(), workload.points.z.data(),
+				config.N_points, cellmate_bench::search_radius,
+				{ workload.queries.x[i], workload.queries.y[i], workload.queries.z[i] }, neighbors);
+			EXPECT_EQ(double(neighbors.size() - 1), target[1]);
+		}
 	}
 }
 
@@ -216,8 +352,9 @@ TEST(BenchmarkWorkloads, QuerySamplingIsDeterministic)
 // independent queries use the intended domain, including planar geometry and Q=N
 TEST(BenchmarkWorkloads, IndependentQueriesUseDomain)
 {
-	for (const auto* scenario : { &cellmate_bench::uniform_volume(), &cellmate_bench::gradient_volume(),
-		&cellmate_bench::clustered_volume(), &cellmate_bench::planar_surface() })
+	for (const auto* scenario : { &cellmate_bench::uniform_volume(), &cellmate_bench::anisotropic_volume(),
+		&cellmate_bench::gradient_volume(), &cellmate_bench::clustered_volume(), &cellmate_bench::lattice_volume(),
+		&cellmate_bench::planar_surface(), &cellmate_bench::spherical_surface() })
 	{
 		SCOPED_TRACE(scenario->name);
 		cellmate_bench::Config config;
@@ -229,6 +366,17 @@ TEST(BenchmarkWorkloads, IndependentQueriesUseDomain)
 		config.N_queries = 4096;
 		const auto workload = cellmate_bench::prepare_workload(*scenario, config);
 		EXPECT_TRUE(std::equal(equal_counts.queries.x.begin(), equal_counts.queries.x.end(), workload.queries.x.begin()));
+		if (scenario == &cellmate_bench::spherical_surface())
+		{
+			std::size_t N_outside = 0;
+			const double radius = workload.half_extent[0];
+			for (std::size_t i = 0; i < config.N_queries; i++)
+			{
+				const double x = workload.queries.x[i], y = workload.queries.y[i], z = workload.queries.z[i];
+				if (x * x + y * y + z * z > radius * radius) { N_outside++; }
+			}
+			EXPECT_NEAR(double(N_outside) / config.N_queries, 1 - cellmate_bench::pi / 6, 0.025);
+		}
 		const std::array<const std::vector<float>*, 3> axes{ &workload.queries.x, &workload.queries.y, &workload.queries.z };
 		for (std::size_t axis = 0; axis < axes.size(); axis++)
 		{
@@ -255,8 +403,9 @@ TEST(BenchmarkWorkloads, IndependentQueriesUseDomain)
 // verifies complete batch memberships using the configured execution, storage and ordering modes
 TEST(BenchmarkWorkloads, BatchMatchesBruteForce)
 {
-	for (const auto* scenario : { &cellmate_bench::uniform_volume(), &cellmate_bench::gradient_volume(),
-		&cellmate_bench::clustered_volume(), &cellmate_bench::planar_surface() })
+	for (const auto* scenario : { &cellmate_bench::uniform_volume(), &cellmate_bench::anisotropic_volume(),
+		&cellmate_bench::gradient_volume(), &cellmate_bench::clustered_volume(), &cellmate_bench::lattice_volume(),
+		&cellmate_bench::planar_surface(), &cellmate_bench::spherical_surface() })
 	for (auto placement : { cellmate_bench::QueryPlacement::points, cellmate_bench::QueryPlacement::domain })
 	{
 		SCOPED_TRACE(scenario->name);

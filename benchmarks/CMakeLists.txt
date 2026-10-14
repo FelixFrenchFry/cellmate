@@ -20,9 +20,12 @@ add_executable(cellmate_benchmarks
 	bench_cellmate.cpp
 	bench_prepare.cpp
 	scenarios/uniform_volume.cpp
+	scenarios/anisotropic_volume.cpp
 	scenarios/planar_surface.cpp
 	scenarios/gradient_volume.cpp
 	scenarios/clustered_volume.cpp
+	scenarios/lattice_volume.cpp
+	scenarios/spherical_surface.cpp
 )
 target_link_libraries(cellmate_benchmarks PRIVATE cellmate::cellmate benchmark::benchmark)
 target_compile_features(cellmate_benchmarks PRIVATE cxx_std_17)

@@ -7,8 +7,8 @@ namespace cellmate_bench
 	inline BenchmarkMatrix balanced_matrix()
 	{
 		BenchmarkMatrix matrix;
-		matrix.reference.N_points = 1'000'000;
-		matrix.reference.N_queries = 1'000'000;
+		matrix.reference.N_points = 500'000;
+		matrix.reference.N_queries = 500'000;
 		matrix.reference.N_target_avg_nbrs = 32.0;
 		matrix.reference.N_max_threads = 8;
 		matrix.reference.rng_seed = 67;
