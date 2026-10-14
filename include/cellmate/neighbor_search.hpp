@@ -312,6 +312,9 @@ namespace cellmate
 		// bounds for entries per chunk of parallel radix sorts and cell table construction
 		static constexpr std::size_t N_chunk_entries_min_ = 1024;
 		static constexpr std::size_t N_chunk_entries_max_ = 4096;
+		// chunks per thread and minimum queries per chunk of parallel batch searches
+		static constexpr std::size_t N_batch_chunks_per_thread_ = 8;
+		static constexpr std::size_t N_batch_chunk_queries_min_ = 16;
 
 		std::shared_ptr<const QueryContext::BuildId> build_id_;
 
@@ -887,17 +890,25 @@ namespace cellmate
 				}
 			}
 
-			// divide queries into one contiguous chunk per thread
-			const std::ptrdiff_t chunk_size = N_queries / N_threads + (N_queries % N_threads != 0);
+			// divide queries into several contiguous chunks per thread
+			const std::ptrdiff_t N_chunks_target = static_cast<std::ptrdiff_t>(N_threads) * static_cast<std::ptrdiff_t>(N_batch_chunks_per_thread_);
+			std::ptrdiff_t chunk_size = N_queries / N_chunks_target + (N_queries % N_chunks_target != 0);
+			if (chunk_size < static_cast<std::ptrdiff_t>(N_batch_chunk_queries_min_))
+			{
+				chunk_size = static_cast<std::ptrdiff_t>(N_batch_chunk_queries_min_);
+			}
 			const std::ptrdiff_t N_chunks = N_queries / chunk_size + (N_queries % chunk_size != 0);
 			std::vector<std::vector<std::size_t>>& chunk_neighbors = scratch.chunk_neighbors_;
-			// keep inactive chunk buffers when a batch uses fewer threads
-			if (chunk_neighbors.size() < static_cast<std::size_t>(N_chunks)) { chunk_neighbors.resize(N_chunks); }
+			// keep inactive chunk buffers when a batch uses fewer chunks
+			if (chunk_neighbors.size() < static_cast<std::size_t>(N_chunks))
+			{
+				chunk_neighbors.resize(N_chunks);
+			}
 			std::exception_ptr error;
 
 			// collect neighbors of each chunk in a separate buffer
 			// ('offsets' temporarily store each original query's neighbor count)
-			#pragma omp parallel for schedule(static) num_threads(N_threads)
+			#pragma omp parallel for schedule(dynamic) num_threads(N_threads) // dynamic due to uneven query costs
 			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 			{
 				const std::ptrdiff_t begin = chunk * chunk_size;
