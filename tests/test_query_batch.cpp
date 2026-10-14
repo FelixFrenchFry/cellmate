@@ -226,12 +226,12 @@ TEST(NeighborSearchQueryBatch, HybridPartialMasksPreserveRowsAcrossBufferBoundar
 	}
 }
 
-// verifies full query groups across range remainder lengths, including at the array end
+// verifies staged query groups across range remainder lengths, including at the array end
 // (the next range's points lie within the radius, so remainders must not cross into it)
 TEST(NeighborSearchQueryBatch, GroupRangeRemaindersPreserveRows)
 {
 	constexpr std::size_t N_lanes = cellmate::detail::DistQuery::N_lanes;
-	// all queries share cell (0, 0, 0), so Morton batches form full groups with SIMD
+	// all queries share cell (0, 0, 0), so Morton batches form one query group
 	std::vector<float> query_x(4 * N_lanes + 1), query_y(4 * N_lanes + 1), query_z(4 * N_lanes + 1);
 	for (std::size_t i = 0; i < query_x.size(); i++)
 	{
@@ -287,6 +287,89 @@ TEST(NeighborSearchQueryBatch, GroupRangeRemaindersPreserveRows)
 						ASSERT_EQ(single, expected);
 					}
 				}
+			}
+		}
+	}
+}
+
+// verifies staged query groups of same-cell queries against single queries and a brute-force oracle
+// (covers bounding box cutoffs, dense groups, the stored array end, both storage modes, and parallel chunks)
+TEST(NeighborSearchQueryBatch, StagedGroupsMatchSingleQueries)
+{
+	cellmate_helpers::PointCloud points;
+	// lattice with unit spacing (the radius) and two more points per cell, so each cell holds a query group
+	for (int z = 0; z < 6; z++)
+	{
+		for (int y = 0; y < 6; y++)
+		{
+			for (int x = 0; x < 6; x++)
+			{
+				const float offsets[3][3]{ { 0.0f, 0.0f, 0.0f }, { 0.5f, 0.25f, 0.125f }, { 0.75f, 0.5f, 0.25f } };
+				for (const auto& offset : offsets)
+				{
+					points.x.push_back(float(x) + offset[0]);
+					points.y.push_back(float(y) + offset[1]);
+					points.z.push_back(float(z) + offset[2]);
+				}
+			}
+		}
+	}
+	// dense block inside one cell, so each query group gathers thousands of candidates
+	for (std::size_t i = 0; i < 5000; i++)
+	{
+		points.x.push_back(10.0f + float(i % 17) / 17.0f);
+		points.y.push_back(10.0f + float((i / 17) % 17) / 17.0f);
+		points.z.push_back(10.0f + float(i / 289) / 18.0f);
+	}
+	// last occupied cell in Morton order, staged from fewer than one SIMD batch at the stored array end
+	for (float offset : { 0.5f, 0.6f, 0.7f })
+	{
+		points.x.push_back(14.0f + offset);
+		points.y.push_back(14.0f + offset);
+		points.z.push_back(14.0f + offset);
+	}
+
+	// query every stored point, plus a few positions outside the grid
+	cellmate_helpers::PointCloud queries = points;
+	for (const std::array<float, 3>& position : { std::array<float, 3>{ -0.5f, 0.0f, 0.0f }, std::array<float, 3>{ 11.5f, 11.5f, 11.5f } })
+	{
+		queries.x.push_back(position[0]);
+		queries.y.push_back(position[1]);
+		queries.z.push_back(position[2]);
+	}
+	const std::size_t N_queries = queries.x.size();
+
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		cellmate::NeighborSearch search(1.0f, storage);
+		search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), cellmate::ComputeMode::seq);
+		std::vector<std::vector<std::size_t>> expected(N_queries);
+		std::vector<std::size_t> oracle;
+		for (std::size_t i = 0; i < N_queries; i++)
+		{
+			search.query({ queries.x[i], queries.y[i], queries.z[i] }, expected[i]);
+			if (i % 7 == 0 || i < 648 || i + 2 >= N_queries) // full lattice and outside queries, every 7th dense query
+			{
+				cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(), points.x.size(),
+					1.0f, { queries.x[i], queries.y[i], queries.z[i] }, oracle);
+				auto row = expected[i];
+				std::sort(row.begin(), row.end());
+				ASSERT_EQ(row, oracle) << "query index = " << i;
+			}
+		}
+
+		std::vector<std::size_t> neighbors, offsets;
+		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+		{
+			SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
+				<< ", 'execution' = " << static_cast<int>(execution));
+			search.query_batch(queries.x.data(), queries.y.data(), queries.z.data(), N_queries, neighbors, offsets, execution);
+			ASSERT_EQ(offsets.size(), N_queries + 1);
+			ASSERT_EQ(offsets.back(), neighbors.size());
+			for (std::size_t i = 0; i < N_queries; i++)
+			{
+				const std::vector<std::size_t> row(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
+				ASSERT_EQ(row, expected[i]) << "query index = " << i;
 			}
 		}
 	}

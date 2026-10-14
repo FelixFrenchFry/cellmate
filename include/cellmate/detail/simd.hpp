@@ -40,6 +40,7 @@ namespace cellmate
 	{
 		using DistQuery = DistQueryAVX512;
 		using DistQueryGroup = DistQueryGroupAVX512;
+		using DistBox = DistBoxAVX512;
 	}
 }
 #elif !defined(CELLMATE_SIMD_SCALAR) && defined(__AVX2__)
@@ -52,6 +53,7 @@ namespace cellmate
 	{
 		using DistQuery = DistQueryAVX256;
 		using DistQueryGroup = DistQueryGroupAVX256;
+		using DistBox = DistBoxAVX256;
 	}
 }
 #else
@@ -64,6 +66,7 @@ namespace cellmate
 	{
 		using DistQuery = DistQueryScalar;
 		using DistQueryGroup = DistQueryGroupScalar;
+		using DistBox = DistBoxScalar;
 	}
 }
 #endif

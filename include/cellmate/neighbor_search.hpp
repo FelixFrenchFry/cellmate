@@ -251,8 +251,11 @@ namespace cellmate
 			CellBounds cell_bounds_{};
 			std::vector<PointRange> point_ranges_;
 			bool point_ranges_valid_ = false;
-			// per-lane batch rows, retaining capacity without input or output pointers
-			std::array<std::vector<std::size_t>, detail::DistQueryGroup::N_lanes> query_neighbors_;
+
+			// candidates staged for shared processing by multiple queries
+			std::array<std::vector<float>, 3> staged_positions_;
+			std::vector<std::size_t> staged_indices_;
+			std::size_t N_staged_ = 0;
 		};
 
 		// TODO: go without struct?
@@ -300,6 +303,7 @@ namespace cellmate
 		uint32_t cell_prefix_shift_ = 64;
 
 		static constexpr std::size_t N_nbr_buffer_size_ = 64;
+		static constexpr std::size_t N_queries_min_staged_ = 4;
 
 		std::shared_ptr<const QueryContext::BuildId> build_id_;
 
@@ -338,7 +342,7 @@ namespace cellmate
 			}
 		}
 
-		// finds neighbors for one query using candidate ranges and SIMD across candidates
+		// finds neighbors for one query using candidate ranges and SIMD distance checks
 		// (appends matching point IDs to 'neighbors', preserving existing entries)
 		template<bool copied>
 		void find_neighbors_from_ranges(std::array<float, 3> query_pos, const QueryContext& context,
@@ -560,117 +564,157 @@ namespace cellmate
 			}
 		}
 
-		// finds neighbors for a full query group using shared candidate ranges and SIMD across queries
-		// (stores a separate neighbor list for each query in 'context.query_neighbors_')
-		template<bool copied>
-		void find_group_neighbors_from_ranges(const detail::DistQueryGroup& dist_queries, QueryContext& context) const
+		// stages candidates for a query group using shared candidate ranges and SIMD bounding box filtering
+		// (keeps candidates within the radius of the bounding box of a query group, in traversal order)
+		void stage_query_group_candidates(std::array<float, 3> first, std::array<float, 3> last, QueryContext& context) const
 		{
-			// prepare separate result lists and select candidate coordinates
-			for (std::vector<std::size_t>& row : context.query_neighbors_)
-			{
-				row.clear();
-			}
-			const std::array<const float*, 3> positions = copied
-				? std::array<const float*, 3>{ copied_ordered_positions_[0].data(),
-											   copied_ordered_positions_[1].data(),
-											   copied_ordered_positions_[2].data() }
-				: positions_;
+			const std::size_t N_lanes = detail::DistQuery::N_lanes;
 
-			const std::size_t N_lanes = detail::DistQueryGroup::N_lanes;
-			static_assert(N_lanes == detail::DistQuery::N_lanes, "query tiles must match index compaction width");
-			// allow a full-width store when one tile crosses a query's buffer flush threshold
-			// TODO: use persistent scratch buffers instead?
-			std::size_t buffers[N_lanes][N_nbr_buffer_size_ + N_lanes - 1];
-			std::size_t N_buffered[N_lanes]{};
-
-			// check each candidate point against all queries in the group
+			// prepare staging arrays for all candidates
+			// (with extra room for full-width SIMD loads and stores past the end)
+			std::size_t N_candidates = 0;
 			for (const QueryContext::PointRange& range : context.point_ranges_)
 			{
-				// process candidates as tiles of 'N_lanes' queries and 'N_lanes' candidates
-				// (pack batch of 'N_lanes' neighbors into a query's list at once, instead of individually)
-				std::size_t i = range.begin;
-				for (; range.end - i >= N_lanes; i += N_lanes)
-				{
-					// compute one neighbor match mask per candidate
-					unsigned candidate_masks[N_lanes];
-					unsigned any_mask = 0;
-					for (std::size_t candidate = 0; candidate < N_lanes; candidate++)
-					{
-						const std::size_t position_idx = copied ? i + candidate : point_order_[i + candidate].idx;
-						const unsigned mask = dist_queries.neighbor_mask(positions[0][position_idx],
-																		 positions[1][position_idx],
-																		 positions[2][position_idx]);
-						candidate_masks[candidate] = mask;
-						any_mask |= mask;
-					}
-					if (any_mask == 0) { continue; }
-
-					// transpose masks and pack matching IDs for each query
-					// (from candidate-major to query-major order to make matches of each query contiguous)
-					unsigned query_masks[N_lanes];
-					detail::transpose_neighbor_masks<N_lanes>(candidate_masks, query_masks);
-					for (std::size_t query = 0; query < N_lanes; query++)
-					{
-						if (query_masks[query] == 0) { continue; }
-						N_buffered[query] += copied
-							? detail::pack_contiguous_indices(copied_ordered_indices_.data() + i, query_masks[query], buffers[query] + N_buffered[query])
-							: detail::pack_neighbor_indices(point_order_.data() + i, query_masks[query], buffers[query] + N_buffered[query]);
-						if (N_buffered[query] >= N_nbr_buffer_size_) // flush buffer into result list when full
-						{
-							flush_neighbor_buffer(context.query_neighbors_[query], buffers[query], N_buffered[query]);
-						}
-					}
-				}
-
-				// process leftover candidates without tiling
-				for (; i < range.end; i++)
-				{
-					const std::size_t position_idx = copied ? i : point_order_[i].idx;
-					unsigned mask = dist_queries.neighbor_mask(positions[0][position_idx],
-															   positions[1][position_idx],
-															   positions[2][position_idx]);
-					if (mask == 0) { continue; }
-
-					// append candidate ID to each matching query's buffer
-					const std::size_t idx = point_order_[i].idx;
-					while (mask != 0)
-					{
-						const unsigned query = detail::first_set_bit(mask);
-						buffers[query][N_buffered[query]++] = idx;
-						if (N_buffered[query] >= N_nbr_buffer_size_) // flush buffer into result list when full
-						{
-							flush_neighbor_buffer(context.query_neighbors_[query], buffers[query], N_buffered[query]);
-						}
-						mask &= mask - 1;
-					}
-				}
+				N_candidates += range.end - range.begin;
 			}
-
-			// flush remaining buffered IDs into each query's result list
-			for (std::size_t query = 0; query < N_lanes; query++)
+			if (context.staged_indices_.size() < N_candidates + N_lanes)
 			{
-				flush_neighbor_buffer(context.query_neighbors_[query], buffers[query], N_buffered[query]);
+				for (std::vector<float>& coords : context.staged_positions_)
+				{
+					coords.resize(N_candidates + N_lanes);
+				}
+				context.staged_indices_.resize(N_candidates + N_lanes);
 			}
+
+			float* staged[3]{ context.staged_positions_[0].data(),
+							  context.staged_positions_[1].data(),
+							  context.staged_positions_[2].data() };
+			std::size_t* staged_indices = context.staged_indices_.data();
+			std::size_t N_staged = 0;
+
+			const detail::DistBox dist_box(first, last, radius_squ_);
+			if (point_access_ == PointAccess::cpy)
+			{
+				// check candidates against the box directly
+				const float* positions[3]{ copied_ordered_positions_[0].data(), copied_ordered_positions_[1].data(), copied_ordered_positions_[2].data() };
+				for (const QueryContext::PointRange& range : context.point_ranges_)
+				{
+					// check candidates in full SIMD batches, masking the range's last batch
+					// (masked lanes may read past the range end, never past the array end)
+					std::size_t i = range.begin;
+					while (i < range.end && point_order_.size() - i >= N_lanes)
+					{
+						unsigned mask = dist_box.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i);
+						if (range.end - i < N_lanes) { mask &= (1u << (range.end - i)) - 1u; }
+						detail::pack_contiguous_floats(positions[0] + i, mask, staged[0] + N_staged);
+						detail::pack_contiguous_floats(positions[1] + i, mask, staged[1] + N_staged);
+						detail::pack_contiguous_floats(positions[2] + i, mask, staged[2] + N_staged);
+						N_staged += detail::pack_contiguous_indices(copied_ordered_indices_.data() + i, mask, staged_indices + N_staged);
+						i += N_lanes;
+					}
+
+					// stage leftover candidates at the array end without filtering
+					for (; i < range.end; i++)
+					{
+						staged[0][N_staged] = positions[0][i];
+						staged[1][N_staged] = positions[1][i];
+						staged[2][N_staged] = positions[2][i];
+						staged_indices[N_staged] = copied_ordered_indices_[i];
+						N_staged++;
+					}
+				}
+			}
+			else
+			{
+				// gather candidate positions and IDs through the point order
+				std::size_t N_gathered = 0;
+				for (const QueryContext::PointRange& range : context.point_ranges_)
+				{
+					for (std::size_t i = range.begin; i < range.end; i++)
+					{
+						const std::size_t idx = point_order_[i].idx;
+						staged[0][N_gathered] = positions_[0][idx];
+						staged[1][N_gathered] = positions_[1][idx];
+						staged[2][N_gathered] = positions_[2][idx];
+						staged_indices[N_gathered] = idx;
+						N_gathered++;
+					}
+				}
+
+				// check gathered candidates against the box in full SIMD batches, packing in place
+				// (each batch is loaded before it is stored, never past unread candidates)
+				for (std::size_t i = 0; i < N_gathered; i += N_lanes)
+				{
+					unsigned mask = dist_box.neighbor_mask(staged[0] + i, staged[1] + i, staged[2] + i);
+					if (N_gathered - i < N_lanes) { mask &= (1u << (N_gathered - i)) - 1u; }
+					detail::pack_contiguous_floats(staged[0] + i, mask, staged[0] + N_staged);
+					detail::pack_contiguous_floats(staged[1] + i, mask, staged[1] + N_staged);
+					detail::pack_contiguous_floats(staged[2] + i, mask, staged[2] + N_staged);
+					N_staged += detail::pack_contiguous_indices(staged_indices + i, mask, staged_indices + N_staged);
+				}
+			}
+			context.N_staged_ = N_staged;
 		}
 
-		// finds groups of queries in the range that share the same candidate cell bounds and process
-		// them either in a group or individually, decision based on group size to SIMD width ratio
+		// finds neighbors for one query using staged candidates and SIMD distance checks
+		// (appends matching point IDs to 'neighbors', preserving existing entries)
+		void find_neighbors_from_staged(std::array<float, 3> query_pos, const QueryContext& context,
+			std::vector<std::size_t>& neighbors) const
+		{
+			const std::size_t N_lanes = detail::DistQuery::N_lanes;
+
+			// select staged candidates
+			const float* staged[3]{ context.staged_positions_[0].data(),
+									context.staged_positions_[1].data(),
+									context.staged_positions_[2].data() };
+			const std::size_t* staged_indices = context.staged_indices_.data();
+			const std::size_t N_staged = context.N_staged_;
+
+			const detail::DistQuery dist_query(query_pos, radius_squ_);
+			// allow a full-width store when a candidate SIMD batch crosses the flush threshold
+			std::size_t buffer[N_nbr_buffer_size_ + detail::DistQuery::N_lanes - 1];
+			std::size_t N_buffered = 0;
+
+			// check candidate points in full SIMD batches
+			std::size_t i = 0;
+			for (; N_staged - i >= N_lanes; i += N_lanes)
+			{
+				const unsigned mask = dist_query.neighbor_mask(staged[0] + i, staged[1] + i, staged[2] + i);
+				N_buffered += detail::pack_contiguous_indices(staged_indices + i, mask, buffer + N_buffered);
+				if (N_buffered >= N_nbr_buffer_size_)
+				{
+					flush_neighbor_buffer(neighbors, buffer, N_buffered);
+				}
+			}
+
+			// check remaining candidate points as one masked SIMD batch
+			// (masked lanes read into the padding past the staged candidates)
+			if (N_staged > i)
+			{
+				const unsigned mask = dist_query.neighbor_mask(staged[0] + i, staged[1] + i, staged[2] + i) & ((1u << (N_staged - i)) - 1u);
+				N_buffered += detail::pack_contiguous_indices(staged_indices + i, mask, buffer + N_buffered);
+			}
+
+			// flush remaining buffered IDs into the result list
+			flush_neighbor_buffer(neighbors, buffer, N_buffered);
+		}
+
+		// finds groups of queries in the range that share the same candidate cell bounds and processes
+		// them either with shared staged candidates or individually, decision based on group size
 		// (appends neighbor lists to 'buffer', storing each count in 'offsets' at its original query index)
-		// NOTE: only 'ref' positions use query groups, 'cpy' positions are typically faster with SIMD across candidates
 		void query_batch_morton_range(const float* x, const float* y, const float* z,
 			const std::vector<PointEntry>& query_order, std::size_t begin, std::size_t end,
 			QueryContext& context, std::vector<std::size_t>& buffer, std::vector<std::size_t>& offsets) const
 		{
-			const std::size_t N_lanes = detail::DistQueryGroup::N_lanes;
 			std::size_t i = begin;
 			while (i < end)
 			{
 				// get candidate cell bounds for current query
-				const std::size_t idx = query_order[i].idx;
+				const PointEntry& entry = query_order[i];
 				CellBounds bounds;
-				if (!query_cell_bounds({ x[idx], y[idx], z[idx] }, bounds))
+				if (!query_cell_bounds({ x[entry.idx], y[entry.idx], z[entry.idx] }, bounds))
 				{
-					offsets[idx] = 0;
+					offsets[entry.idx] = 0;
 					i++;
 					continue;
 				}
@@ -678,63 +722,55 @@ namespace cellmate
 				// gather candidate point ranges within the candidate cell bounds
 				gather_query_ranges(bounds, context);
 
-				// start a group with the current query
-				float query_x[N_lanes], query_y[N_lanes], query_z[N_lanes];
-				query_x[0] = x[idx];
-				query_y[0] = y[idx];
-				query_z[0] = z[idx];
-				std::size_t N_group_size = 1;
-
-				// collect consecutive queries with the same candidate cell bounds
-				// (stops at a different key, the SIMD width, or the end of the chunk)
-				while ((query_order[i].key & 1u) == 0 && N_group_size < N_lanes && N_group_size < end - i)
+				// collect consecutive queries with the same candidate cell bounds into a group
+				// (stops at a different key or the end of the chunk, queries outside the grid stay alone)
+				std::size_t group_end = i + 1;
+				if ((entry.key & 1u) == 0)
 				{
-					const PointEntry& entry = query_order[i + N_group_size];
-					if (entry.key != query_order[i].key) { break; }
-					query_x[N_group_size] = x[entry.idx];
-					query_y[N_group_size] = y[entry.idx];
-					query_z[N_group_size] = z[entry.idx];
-					N_group_size++;
+					while (group_end < end && query_order[group_end].key == entry.key) { group_end++; }
 				}
 
-				// process a full group's queries togehter with SIMD across queries, or
-				// process a non-full group's queries individually with SIMD across candidates
-				if (N_lanes > 1 && N_group_size == N_lanes && point_access_ == PointAccess::ref) // full group
+				// process a large group's queries together with staged candidates, or
+				// process a small group's queries individually with the gathered ranges
+				if (detail::has_index_compaction && group_end - i >= N_queries_min_staged_) // large group
 				{
-					const detail::DistQueryGroup dist_queries(query_x, query_y, query_z, radius_squ_);
-					if (point_access_ == PointAccess::cpy)
+					// stage candidates within the radius of the group's bounding box
+					std::array<float, 3> first{ x[entry.idx], y[entry.idx], z[entry.idx] };
+					std::array<float, 3> last = first;
+					for (std::size_t k = i + 1; k < group_end; k++)
 					{
-						find_group_neighbors_from_ranges<true>(dist_queries, context);
+						const std::size_t idx = query_order[k].idx;
+						first = { (std::min)(first[0], x[idx]), (std::min)(first[1], y[idx]), (std::min)(first[2], z[idx]) };
+						last = { (std::max)(last[0], x[idx]), (std::max)(last[1], y[idx]), (std::max)(last[2], z[idx]) };
 					}
-					else
-					{
-						find_group_neighbors_from_ranges<false>(dist_queries, context);
-					}
+					stage_query_group_candidates(first, last, context);
 
-					for (std::size_t k = 0; k < N_group_size; k++)
+					for (std::size_t k = i; k < group_end; k++)
 					{
-						const std::vector<std::size_t>& row = context.query_neighbors_[k];
-						buffer.insert(buffer.end(), row.begin(), row.end());
-						offsets[query_order[i + k].idx] = row.size();
+						const std::size_t idx = query_order[k].idx;
+						const std::size_t start = buffer.size();
+						find_neighbors_from_staged({ x[idx], y[idx], z[idx] }, context, buffer);
+						offsets[idx] = buffer.size() - start;
 					}
 				}
-				else // non-full group
+				else // small group
 				{
-					for (std::size_t k = 0; k < N_group_size; k++)
+					for (std::size_t k = i; k < group_end; k++)
 					{
+						const std::size_t idx = query_order[k].idx;
 						const std::size_t start = buffer.size();
 						if (point_access_ == PointAccess::cpy)
 						{
-							find_neighbors_from_ranges<true>({ query_x[k], query_y[k], query_z[k] }, context, buffer);
+							find_neighbors_from_ranges<true>({ x[idx], y[idx], z[idx] }, context, buffer);
 						}
 						else
 						{
-							find_neighbors_from_ranges<false>({ query_x[k], query_y[k], query_z[k] }, context, buffer);
+							find_neighbors_from_ranges<false>({ x[idx], y[idx], z[idx] }, context, buffer);
 						}
-						offsets[query_order[i + k].idx] = buffer.size() - start;
+						offsets[idx] = buffer.size() - start;
 					}
 				}
-				i += N_group_size;
+				i = group_end;
 			}
 		}
 
