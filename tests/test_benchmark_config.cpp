@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -171,7 +172,7 @@ TEST(BenchmarkScenarios, ClusteredVolumeHasDensePockets)
 	const auto workload = cellmate_bench::prepare_workload(cellmate_bench::clustered_volume(), config);
 	const auto uniform = cellmate_bench::uniform_volume().make_workload(config).points;
 	std::size_t clustered_neighbors = 0, uniform_neighbors = 0, empty_queries = 0;
-	std::vector<std::size_t> neighbors;
+	std::vector<std::uint32_t> neighbors;
 	for (std::size_t i = 0; i < 512; i++)
 	{
 		cellmate_helpers::brute_force(workload.points.x.data(), workload.points.y.data(), workload.points.z.data(),
@@ -275,7 +276,8 @@ TEST(BenchmarkWorkloads, TargetCountIsReached)
 		const auto workload = cellmate_bench::prepare_workload(*scenario, config);
 		cellmate::NeighborSearch search(cellmate_bench::search_radius);
 		search.rebuild(workload.points.x.data(), workload.points.y.data(), workload.points.z.data(), config.N_points);
-		std::vector<std::size_t> neighbors, offsets;
+		std::vector<std::uint32_t> neighbors;
+		std::vector<std::size_t> offsets;
 		search.query_batch(workload.queries.x.data(), workload.queries.y.data(), workload.queries.z.data(),
 			config.N_queries, neighbors, offsets);
 		const double N_self = placement == cellmate_bench::QueryPlacement::points ? 1 : 0;
@@ -293,7 +295,7 @@ TEST(BenchmarkWorkloads, TiedDistancesUseNearestCount)
 		config.N_points = config.N_queries = 8;
 		config.N_target_avg_nbrs = target[0];
 		const auto workload = cellmate_bench::prepare_workload(cellmate_bench::lattice_volume(), config);
-		std::vector<std::size_t> neighbors;
+		std::vector<std::uint32_t> neighbors;
 		for (std::size_t i = 0; i < config.N_queries; i++)
 		{
 			cellmate_helpers::brute_force(workload.points.x.data(), workload.points.y.data(), workload.points.z.data(),
@@ -311,7 +313,7 @@ TEST(BenchmarkWorkloads, UnreachableTargetsIncludeAllPoints)
 	config.N_points = config.N_queries = 8;
 	config.N_target_avg_nbrs = 32;
 	const auto workload = cellmate_bench::prepare_workload(cellmate_bench::uniform_volume(), config);
-	std::vector<std::size_t> neighbors;
+	std::vector<std::uint32_t> neighbors;
 	for (std::size_t i = 0; i < config.N_queries; i++)
 	{
 		cellmate_helpers::brute_force(workload.points.x.data(), workload.points.y.data(), workload.points.z.data(),
@@ -423,7 +425,9 @@ TEST(BenchmarkWorkloads, BatchMatchesBruteForce)
 			cellmate::NeighborSearch search(cellmate_bench::search_radius, point_access);
 			search.rebuild(workload.points.x.data(), workload.points.y.data(), workload.points.z.data(),
 				config.N_points, compute_mode);
-			std::vector<std::size_t> neighbors, offsets, expected;
+			std::vector<std::uint32_t> neighbors;
+			std::vector<std::uint32_t> expected;
+			std::vector<std::size_t> offsets;
 			search.query_batch(workload.queries.x.data(), workload.queries.y.data(), workload.queries.z.data(),
 				config.N_queries, neighbors, offsets, compute_mode, query_order);
 			ASSERT_EQ(offsets.size(), config.N_queries + 1);
@@ -435,7 +439,7 @@ TEST(BenchmarkWorkloads, BatchMatchesBruteForce)
 				cellmate_helpers::brute_force(workload.points.x.data(), workload.points.y.data(), workload.points.z.data(),
 					config.N_points, cellmate_bench::search_radius,
 					{ workload.queries.x[i], workload.queries.y[i], workload.queries.z[i] }, expected);
-				std::vector<std::size_t> actual(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
+				std::vector<std::uint32_t> actual(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
 				std::sort(actual.begin(), actual.end());
 				EXPECT_EQ(actual, expected) << "query index = " << i;
 			}

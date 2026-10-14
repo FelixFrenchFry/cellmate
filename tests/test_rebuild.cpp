@@ -18,7 +18,8 @@ TEST(NeighborSearchRebuild, RebuildMatchesBruteForce)
 {
 	const float radius = 1.0f;
 	cellmate::NeighborSearch search(radius);
-	std::vector<std::size_t> neighbors, expected;
+	std::vector<std::uint32_t> neighbors;
+	std::vector<std::uint32_t> expected;
 	float x[]{ 0.0f, 4.0f, 12.0f };
 	const float y[]{ 0.0f, 0.0f, 0.0f };
 	const float z[]{ 0.0f, 0.0f, 0.0f };
@@ -48,20 +49,20 @@ TEST(NeighborSearchRebuild, RepeatedBoundsFollowSearchBuilds)
 	const float second_x[]{ 0.0f, 0.25f, 1.25f, 1.5f, 1.75f, 4.0f };
 	const float y[6]{}, z[6]{};
 	const std::size_t point_counts[]{ 3, 6, 3, 0, 6 };
-	const std::vector<std::size_t> expected[]{ { 1 }, { 2, 3, 4 }, { 1 }, {}, { 2, 3, 4 } };
+	const std::vector<std::uint32_t> expected[]{ { 1 }, { 2, 3, 4 }, { 1 }, {}, { 2, 3, 4 } };
 	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
 	{
 		SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage));
 		cellmate::NeighborSearch first(1.0f, storage), second(1.0f, storage);
 		second.rebuild(second_x, y, z, 6, cellmate::ComputeMode::seq);
-		std::vector<std::size_t> neighbors;
+		std::vector<std::uint32_t> neighbors;
 		for (std::size_t i = 0; i < 5; i++)
 		{
 			first.rebuild(point_counts[i] == 3 ? first_x : second_x, y, z, point_counts[i], cellmate::ComputeMode::seq);
 			first.query({ 1.5f, 0.0f, 0.0f }, neighbors);
 			ASSERT_EQ(neighbors, expected[i]);
 			second.query({ 1.5f, 0.0f, 0.0f }, neighbors);
-			ASSERT_EQ(neighbors, (std::vector<std::size_t>{ 2, 3, 4 }));
+			ASSERT_EQ(neighbors, (std::vector<std::uint32_t>{ 2, 3, 4 }));
 			first.query({ 1.5f, 0.0f, 0.0f }, neighbors);
 			ASSERT_EQ(neighbors, expected[i]);
 		}
@@ -78,7 +79,9 @@ TEST(NeighborSearchRebuild, SparseCellsMatchAcrossRebuilds)
 		{
 			cellmate::NeighborSearch search(1.0f, storage);
 			cellmate_helpers::PointCloud points;
-			std::vector<std::size_t> neighbors, offsets, expected;
+			std::vector<std::uint32_t> neighbors;
+			std::vector<std::uint32_t> expected;
+			std::vector<std::size_t> offsets;
 			for (std::size_t N_points : { 2047u, 2048u, 2049u, 8193u, 1000u, 1u, 0u, 2048u })
 			{
 				SCOPED_TRACE(::testing::Message() << "point count = " << N_points
@@ -130,8 +133,9 @@ TEST(NeighborSearchRebuild, CopiedIndicesMatchAcrossRebuilds)
 	for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
 	{
 		cellmate::NeighborSearch search(radius, cellmate::PointAccess::cpy);
-		std::vector<std::size_t> neighbors, expected;
-		uint32_t seed = 37;
+		std::vector<std::uint32_t> neighbors;
+		std::vector<std::uint32_t> expected;
+		std::uint32_t seed = 37;
 		for (std::size_t N_points : { 4000u, 301u, 0u, 37u, 4000u })
 		{
 			SCOPED_TRACE(::testing::Message() << "point count = " << N_points
@@ -167,8 +171,10 @@ TEST(NeighborSearchRebuild, PrefixDirectorySizesPreserveQueryResults)
 		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
 		{
 			cellmate::NeighborSearch search(1.0f, storage);
-			cellmate_helpers::PointCloud points, queries;
-			std::vector<std::size_t> neighbors, offsets;
+			cellmate_helpers::PointCloud points;
+			cellmate_helpers::PointCloud queries;
+			std::vector<std::uint32_t> neighbors;
+			std::vector<std::size_t> offsets;
 			for (std::size_t N_points : { 65536u, 65537u, 131073u, 262145u, 524289u,
 				1048577u, 262144u, 2048u, 0u, 65536u })
 			{
@@ -187,7 +193,7 @@ TEST(NeighborSearchRebuild, PrefixDirectorySizesPreserveQueryResults)
 					{ extent / 2, 0.0f, 0.0f }, { extent / 2, extent / 2, 0.0f },
 					{ extent - 1.5f, extent, extent }
 				};
-				std::array<std::vector<std::size_t>, 6> expected;
+				std::array<std::vector<std::uint32_t>, 6> expected;
 				for (std::size_t i = 0; i < expected.size(); i++)
 				{
 					cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(),
@@ -211,7 +217,7 @@ TEST(NeighborSearchRebuild, PrefixDirectorySizesPreserveQueryResults)
 				ASSERT_EQ(offsets.back(), neighbors.size());
 				for (std::size_t i = 0; i < queries.x.size(); i++)
 				{
-					std::vector<std::size_t> row(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
+					std::vector<std::uint32_t> row(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
 					std::sort(row.begin(), row.end());
 					ASSERT_EQ(row, expected[i % expected.size()]) << "query index = " << i;
 				}
@@ -236,7 +242,8 @@ TEST(NeighborSearchRebuild, FailedAndEmptyRebuildsClearTheSearch)
 			EXPECT_THROW(search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), execution),
 				std::invalid_argument);
 			points.x[0] = original_x;
-			std::vector<std::size_t> neighbors, offsets;
+			std::vector<std::uint32_t> neighbors;
+			std::vector<std::size_t> offsets;
 			search.query({ original_x, points.y[0], points.z[0] }, neighbors);
 			ASSERT_TRUE(neighbors.empty());
 			search.query_batch(points.x.data(), points.y.data(), points.z.data(), 1, neighbors, offsets, execution);
@@ -245,10 +252,35 @@ TEST(NeighborSearchRebuild, FailedAndEmptyRebuildsClearTheSearch)
 
 			search.rebuild(points.x.data(), points.y.data(), points.z.data(), 1, execution);
 			search.query({ original_x, points.y[0], points.z[0] }, neighbors);
-			ASSERT_EQ(neighbors, (std::vector<std::size_t>{ 0 }));
+			ASSERT_EQ(neighbors, (std::vector<std::uint32_t>{ 0 }));
 			search.rebuild(nullptr, nullptr, nullptr, 0, execution);
 			search.query({ original_x, points.y[0], points.z[0] }, neighbors);
 			ASSERT_TRUE(neighbors.empty());
 		}
 	}
+}
+
+// verifies that point counts beyond 32 bits fail and clear the search
+// (covers both storage and execution modes, failing before positions are read)
+TEST(NeighborSearchRebuild, PointCountsBeyond32BitThrow)
+{
+#if SIZE_MAX > UINT32_MAX
+	const float coordinates[]{ 0.0f };
+	const std::size_t N_points = std::size_t((std::numeric_limits<std::uint32_t>::max)()) + 1;
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+		{
+			cellmate::NeighborSearch search(1.0f, storage);
+			search.rebuild(coordinates, coordinates, coordinates, 1, execution);
+			EXPECT_THROW(search.rebuild(coordinates, coordinates, coordinates, N_points, execution), std::length_error);
+			EXPECT_THROW(search.rebuild(nullptr, nullptr, nullptr, N_points, execution), std::length_error);
+			std::vector<std::uint32_t> neighbors{ 99 };
+			search.query({ 0.0f, 0.0f, 0.0f }, neighbors);
+			EXPECT_TRUE(neighbors.empty());
+		}
+	}
+#else
+	GTEST_SKIP() << "point counts beyond 32 bits are not representable";
+#endif
 }

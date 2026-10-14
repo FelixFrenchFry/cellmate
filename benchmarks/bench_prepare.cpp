@@ -72,7 +72,8 @@ namespace cellmate_bench
 			const std::size_t N_target = std::size_t(std::llround(config.N_target_avg_nbrs * calibration.N_queries)) + N_self;
 
 			// start slightly above the estimated scale and double until target is reached
-			std::vector<std::size_t> neighbors, offsets;
+			std::vector<std::uint32_t> neighbors;
+			std::vector<std::size_t> offsets;
 			std::vector<double> distances_squ;
 			for (double radius = 1.25 * search_radius;; radius *= 2)
 			{

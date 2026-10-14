@@ -10,8 +10,6 @@
 
 namespace cellmate_helpers
 {
-	using std::uint32_t;
-
 	struct PointCloud
 	{
 		std::vector<float> x, y, z;
@@ -34,7 +32,7 @@ namespace cellmate_helpers
 	}
 
 	// generate points in ['min', 'max') along each axis
-	inline PointCloud make_uniform_cloud(std::size_t N_points, uint32_t seed, float min, float max)
+	inline PointCloud make_uniform_cloud(std::size_t N_points, std::uint32_t seed, float min, float max)
 	{
 		if (!std::isfinite(min) || !std::isfinite(max) || min >= max)
 		{

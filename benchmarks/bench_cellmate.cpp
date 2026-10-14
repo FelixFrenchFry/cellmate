@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -77,7 +78,8 @@ namespace cellmate_bench
 				const OpenMPSettings settings(config.N_max_threads);
 #endif
 				cellmate::NeighborSearch search(search_radius, config.point_access);
-				std::vector<std::size_t> neighbors, offsets;
+				std::vector<std::uint32_t> neighbors;
+				std::vector<std::size_t> offsets;
 				std::size_t N_neighbors = 0;
 				const auto rebuild = [&]()
 				{
@@ -117,7 +119,8 @@ namespace cellmate_bench
 					}
 					// compare complete memberships at up to eight centers spread through the cloud
 					const std::size_t N_samples = (std::min)(config.N_queries, std::size_t(8));
-					std::vector<std::size_t> actual, expected;
+					std::vector<std::uint32_t> actual;
+					std::vector<std::uint32_t> expected;
 					for (std::size_t i = 0; i < N_samples; i++)
 					{
 						const std::size_t idx = config.N_queries <= 8 ? i : i * (config.N_queries - 1) / 7;

@@ -33,9 +33,6 @@ CELLMATE_DETAIL_FP_BEGIN
 
 namespace cellmate
 {
-	using std::uint32_t;
-	using std::uint64_t;
-
 	// controls whether operations use multithreading
 	enum class ComputeMode
 	{
@@ -104,6 +101,10 @@ namespace cellmate
 				copied_ordered_indices_.clear();
 				return;
 			}
+			if (N_points > (std::numeric_limits<std::uint32_t>::max)())
+			{
+				throw std::length_error("'cellmate::rebuild()' 'N_points' exceeds 32-bit point count limits");
+			}
 			if (!x || !y || !z)
 			{
 				throw std::invalid_argument("'cellmate::rebuild()' requires three coordinate arrays");
@@ -115,7 +116,7 @@ namespace cellmate
 			if (exec == ComputeMode::par && N_threads > 1 &&
 				N_points <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
-				rebuild_par(x, y, z, static_cast<std::ptrdiff_t>(N_points), N_threads);
+				rebuild_par(x, y, z, N_points, N_threads);
 			}
 			else
 			{
@@ -134,7 +135,7 @@ namespace cellmate
 		}
 
 		// TODO: XML documentation?
-		void query(std::array<float, 3> query_pos, std::vector<std::size_t>& neighbors) const
+		void query(std::array<float, 3> query_pos, std::vector<std::uint32_t>& neighbors) const
 		{
 			neighbors.clear();
 
@@ -149,13 +150,9 @@ namespace cellmate
 
 		// TODO: XML documentation?
 		void query_batch(const float* x, const float* y, const float* z, std::size_t N_queries,
-			std::vector<std::size_t>& neighbors, std::vector<std::size_t>& offsets,
+			std::vector<std::uint32_t>& neighbors, std::vector<std::size_t>& offsets,
 			ComputeMode exec = ComputeMode::par, QueryOrder order = QueryOrder::morton) const
 		{
-			if (&neighbors == &offsets)
-			{
-				throw std::invalid_argument("'cellmate::query_batch()' requires distinct output vectors");
-			}
 			if (order != QueryOrder::morton && order != QueryOrder::input)
 			{
 				throw std::invalid_argument("'cellmate::query_batch()' 'order' must be 'morton' or 'input'");
@@ -163,6 +160,10 @@ namespace cellmate
 			if (N_queries >= offsets.max_size())
 			{
 				throw std::length_error("'cellmate::query_batch()' 'N_queries' exceeds output limits");
+			}
+			if (N_queries > (std::numeric_limits<std::uint32_t>::max)())
+			{
+				throw std::length_error("'cellmate::query_batch()' 'N_queries' exceeds 32-bit query count limits");
 			}
 			if (N_queries == 0)
 			{
@@ -224,8 +225,8 @@ namespace cellmate
 		// bounding box in cell coordinates
 		struct CellBounds
 		{
-			std::array<uint32_t, 3> first;
-			std::array<uint32_t, 3> last;
+			std::array<std::uint32_t, 3> first;
+			std::array<std::uint32_t, 3> last;
 		};
 
 		// reusable cell lookup cache and point ranges for one querying thread
@@ -234,15 +235,15 @@ namespace cellmate
 			struct CellCacheEntry
 			{
 				// invalid Morton key marks an unused entry
-				uint64_t key = (std::numeric_limits<uint64_t>::max)();
+				std::uint64_t key = (std::numeric_limits<std::uint64_t>::max)();
 				std::size_t idx = 0;
 			};
 
 			// contiguous point order entries of >=1 occupied cells, excluding the end
 			struct PointRange
 			{
-				std::size_t begin;
-				std::size_t end;
+				std::uint32_t begin;
+				std::uint32_t end;
 			};
 
 			// track build identity to prevent stale cache reuse
@@ -255,15 +256,16 @@ namespace cellmate
 
 			// candidates staged for shared processing by multiple queries
 			std::array<std::vector<float>, 3> staged_positions_;
-			std::vector<std::size_t> staged_indices_;
+			std::vector<std::uint32_t> staged_indices_;
 			std::size_t N_staged_ = 0;
 		};
 
+		// Morton key and original index of a point or query
 		// TODO: go without struct?
 		struct PointEntry
 		{
-			uint64_t key;
-			std::size_t idx;
+			std::uint64_t key;
+			std::uint32_t idx;
 		};
 
 		// reusable batch storage, shared by successive searches on one calling thread
@@ -273,7 +275,7 @@ namespace cellmate
 			std::vector<PointEntry> query_order_; // Morton keys and original query indices, sorted for processing
 			std::vector<PointEntry> query_order_scratch_; // alternate buffer for radix sort passes
 			std::vector<std::array<std::size_t, 256>> radix_offsets_; // per-chunk byte counts and offsets for parallel radix sort
-			std::vector<std::vector<std::size_t>> chunk_neighbors_; // neighbors collected per chunk before restoring query row order
+			std::vector<std::vector<std::uint32_t>> chunk_neighbors_; // neighbors collected per chunk before restoring query row order
 		};
 
 		float radius_;
@@ -282,12 +284,12 @@ namespace cellmate
 		PointAccess point_access_;
 		std::array<const float*, 3> positions_{};
 		std::array<std::vector<float>, 3> copied_ordered_positions_;
-		std::vector<std::size_t> copied_ordered_indices_;
+		std::vector<std::uint32_t> copied_ordered_indices_;
 		std::array<float, 3> origin_{};
-		std::array<uint32_t, 3> last_cell_{};
+		std::array<std::uint32_t, 3> last_cell_{};
 		std::vector<PointEntry> point_order_;
-		std::vector<uint64_t> cell_keys_;
-		std::vector<std::size_t> cell_starts_;
+		std::vector<std::uint64_t> cell_keys_;
+		std::vector<std::uint32_t> cell_starts_;
 
 		// reusable entry buffer for sequential and parallel radix sorting
 		std::vector<PointEntry> point_order_scratch_;
@@ -301,7 +303,7 @@ namespace cellmate
 		// (restricts 'find_cell()' searches to cell keys with the same prefix bits)
 		std::vector<std::size_t> cell_prefix_; // retains capacity across rebuilds
 		// key shift to directory range, 64 flags directory as unused
-		uint32_t cell_prefix_shift_ = 64;
+		std::uint32_t cell_prefix_shift_ = 64;
 
 		static constexpr std::size_t N_nbr_buffer_size_ = 64;
 		static constexpr std::size_t N_queries_min_staged_ = 3;
@@ -338,7 +340,7 @@ namespace cellmate
 		}
 
 		// append neighbors of one query position without clearing the output
-		void append_neighbors(std::array<float, 3> query_pos, QueryContext& context, std::vector<std::size_t>& neighbors) const
+		void append_neighbors(std::array<float, 3> query_pos, QueryContext& context, std::vector<std::uint32_t>& neighbors) const
 		{
 			CellBounds bounds;
 			if (!query_cell_bounds(query_pos, bounds)) { return; }
@@ -357,7 +359,7 @@ namespace cellmate
 		// (appends matching point IDs to 'neighbors', preserving existing entries)
 		template<bool copied>
 		void find_neighbors_from_ranges(std::array<float, 3> query_pos, const QueryContext& context,
-			std::vector<std::size_t>& neighbors) const
+			std::vector<std::uint32_t>& neighbors) const
 		{
 			// select candidate coordinates
 			const std::array<const float*, 3> positions = copied
@@ -368,7 +370,7 @@ namespace cellmate
 
 			const detail::DistQuery dist_query(query_pos, radius_squ_);
 			// allow a full-width store when a candidate SIMD batch crosses the flush threshold
-			std::size_t buffer[N_nbr_buffer_size_ + detail::DistQuery::N_lanes - 1];
+			std::uint32_t buffer[N_nbr_buffer_size_ + detail::DistQuery::N_lanes - 1];
 			std::size_t N_buffered = 0;
 
 			// check candidates in each range using the same query and buffer
@@ -383,8 +385,8 @@ namespace cellmate
 
 		// moves buffered neighbor indices into the output
 		static void flush_neighbor_buffer(
-			std::vector<std::size_t>& neighbors,
-			const std::size_t* buffer,
+			std::vector<std::uint32_t>& neighbors,
+			const std::uint32_t* buffer,
 			std::size_t& N_buffered)
 		{
 			if (N_buffered == 0) { return; }
@@ -411,12 +413,12 @@ namespace cellmate
 			const double last_z = (std::min)(double(last_cell_[2]), cell_z + 1.0);
 			if (first_x > last_x || first_y > last_y || first_z > last_z) { return false; }
 
-			bounds.first = { static_cast<uint32_t>(first_x),
-							 static_cast<uint32_t>(first_y),
-							 static_cast<uint32_t>(first_z) };
-			bounds.last = { static_cast<uint32_t>(last_x),
-							static_cast<uint32_t>(last_y),
-							static_cast<uint32_t>(last_z) };
+			bounds.first = { static_cast<std::uint32_t>(first_x),
+							 static_cast<std::uint32_t>(first_y),
+							 static_cast<std::uint32_t>(first_z) };
+			bounds.last = { static_cast<std::uint32_t>(last_x),
+							static_cast<std::uint32_t>(last_y),
+							static_cast<std::uint32_t>(last_z) };
 			return true;
 		}
 
@@ -440,32 +442,32 @@ namespace cellmate
 
 			// spread x and y bits once instead of per row and per cell
 			assert(bounds.last[0] - bounds.first[0] < 3 && bounds.last[1] - bounds.first[1] < 3);
-			std::array<uint64_t, 3> x_codes{};
-			std::array<uint64_t, 3> y_codes{};
-			for (uint32_t x = bounds.first[0]; x <= bounds.last[0]; x++)
+			std::array<std::uint64_t, 3> x_codes{};
+			std::array<std::uint64_t, 3> y_codes{};
+			for (std::uint32_t x = bounds.first[0]; x <= bounds.last[0]; x++)
 			{
 				x_codes[x - bounds.first[0]] = spread_bits(x);
 			}
-			for (uint32_t y = bounds.first[1]; y <= bounds.last[1]; y++)
+			for (std::uint32_t y = bounds.first[1]; y <= bounds.last[1]; y++)
 			{
 				y_codes[y - bounds.first[1]] = spread_bits(y) << 1;
 			}
 
 			// collect and merge point ranges from occupied cells in traversal order, skipping empty cells
-			for (uint32_t z = bounds.first[2]; z <= bounds.last[2]; z++)
+			for (std::uint32_t z = bounds.first[2]; z <= bounds.last[2]; z++)
 			{
-				const uint64_t z_code = spread_bits(z) << 2;
-				for (uint32_t y = bounds.first[1]; y <= bounds.last[1]; y++)
+				const std::uint64_t z_code = spread_bits(z) << 2;
+				for (std::uint32_t y = bounds.first[1]; y <= bounds.last[1]; y++)
 				{
-					const uint64_t yz_code = z_code | y_codes[y - bounds.first[1]];
-					for (uint32_t x = bounds.first[0]; x <= bounds.last[0]; x++)
+					const std::uint64_t yz_code = z_code | y_codes[y - bounds.first[1]];
+					for (std::uint32_t x = bounds.first[0]; x <= bounds.last[0]; x++)
 					{
-						const uint64_t key = yz_code | x_codes[x - bounds.first[0]];
+						const std::uint64_t key = yz_code | x_codes[x - bounds.first[0]];
 						const std::size_t cell_idx = find_cell(key, context);
 						if (cell_idx == cell_keys_.size()) { continue; }
 
-						const std::size_t begin = cell_starts_[cell_idx];
-						std::size_t end = cell_starts_[cell_idx + 1];
+						const std::uint32_t begin = cell_starts_[cell_idx];
+						std::uint32_t end = cell_starts_[cell_idx + 1];
 						// consecutive even/odd x cells have consecutive Morton keys
 						if ((x & 1) == 0 && x < bounds.last[0])
 						{
@@ -494,9 +496,9 @@ namespace cellmate
 		// collects original indices of points within the search radius
 		// (filtering one point range, preserving output order of the original indices)
 		template<bool copied>
-		void append_range_neighbors(std::size_t begin, std::size_t end, const std::array<const float*, 3>& positions,
-			const detail::DistQuery& dist_query, std::vector<std::size_t>& neighbors,
-			std::size_t* buffer, std::size_t& N_buffered) const
+		void append_range_neighbors(std::uint32_t begin, std::uint32_t end, const std::array<const float*, 3>& positions,
+			const detail::DistQuery& dist_query, std::vector<std::uint32_t>& neighbors,
+			std::uint32_t* buffer, std::size_t& N_buffered) const
 		{
 			constexpr bool use_buffer = copied && detail::has_index_compaction;
 
@@ -600,7 +602,7 @@ namespace cellmate
 			float* staged[3]{ context.staged_positions_[0].data(),
 							  context.staged_positions_[1].data(),
 							  context.staged_positions_[2].data() };
-			std::size_t* staged_indices = context.staged_indices_.data();
+			std::uint32_t* staged_indices = context.staged_indices_.data();
 			std::size_t N_staged = 0;
 
 			const detail::DistBox dist_box(first, last, radius_squ_);
@@ -643,7 +645,7 @@ namespace cellmate
 				{
 					for (std::size_t i = range.begin; i < range.end; i++)
 					{
-						const std::size_t idx = point_order_[i].idx;
+						const std::uint32_t idx = point_order_[i].idx;
 						staged[0][N_gathered] = positions_[0][idx];
 						staged[1][N_gathered] = positions_[1][idx];
 						staged[2][N_gathered] = positions_[2][idx];
@@ -670,7 +672,7 @@ namespace cellmate
 		// finds neighbors for one query using staged candidates and SIMD distance checks
 		// (appends matching point IDs to 'neighbors', preserving existing entries)
 		void find_neighbors_from_staged(std::array<float, 3> query_pos, const QueryContext& context,
-			std::vector<std::size_t>& neighbors) const
+			std::vector<std::uint32_t>& neighbors) const
 		{
 			const std::size_t N_lanes = detail::DistQuery::N_lanes;
 
@@ -678,12 +680,12 @@ namespace cellmate
 			const float* staged[3]{ context.staged_positions_[0].data(),
 									context.staged_positions_[1].data(),
 									context.staged_positions_[2].data() };
-			const std::size_t* staged_indices = context.staged_indices_.data();
+			const std::uint32_t* staged_indices = context.staged_indices_.data();
 			const std::size_t N_staged = context.N_staged_;
 
 			const detail::DistQuery dist_query(query_pos, radius_squ_);
 			// allow a full-width store when a candidate SIMD batch crosses the flush threshold
-			std::size_t buffer[N_nbr_buffer_size_ + detail::DistQuery::N_lanes - 1];
+			std::uint32_t buffer[N_nbr_buffer_size_ + detail::DistQuery::N_lanes - 1];
 			std::size_t N_buffered = 0;
 
 			// check candidate points in full SIMD batches
@@ -715,7 +717,7 @@ namespace cellmate
 		// (appends neighbor lists to 'buffer', storing each count in 'offsets' at its original query index)
 		void query_batch_morton_range(const float* x, const float* y, const float* z,
 			const std::vector<PointEntry>& query_order, std::size_t begin, std::size_t end,
-			QueryContext& context, std::vector<std::size_t>& buffer, std::vector<std::size_t>& offsets) const
+			QueryContext& context, std::vector<std::uint32_t>& buffer, std::vector<std::size_t>& offsets) const
 		{
 			std::size_t i = begin;
 			while (i < end)
@@ -750,7 +752,7 @@ namespace cellmate
 					std::array<float, 3> last = first;
 					for (std::size_t k = i + 1; k < group_end; k++)
 					{
-						const std::size_t idx = query_order[k].idx;
+						const std::uint32_t idx = query_order[k].idx;
 						first = { (std::min)(first[0], x[idx]), (std::min)(first[1], y[idx]), (std::min)(first[2], z[idx]) };
 						last = { (std::max)(last[0], x[idx]), (std::max)(last[1], y[idx]), (std::max)(last[2], z[idx]) };
 					}
@@ -758,7 +760,7 @@ namespace cellmate
 
 					for (std::size_t k = i; k < group_end; k++)
 					{
-						const std::size_t idx = query_order[k].idx;
+						const std::uint32_t idx = query_order[k].idx;
 						const std::size_t start = buffer.size();
 						find_neighbors_from_staged({ x[idx], y[idx], z[idx] }, context, buffer);
 						offsets[idx] = buffer.size() - start;
@@ -768,7 +770,7 @@ namespace cellmate
 				{
 					for (std::size_t k = i; k < group_end; k++)
 					{
-						const std::size_t idx = query_order[k].idx;
+						const std::uint32_t idx = query_order[k].idx;
 						const std::size_t start = buffer.size();
 						if (point_access_ == PointAccess::cpy)
 						{
@@ -788,13 +790,13 @@ namespace cellmate
 		// restores neighbor lists collected in Morton order to the original query order
 		// (copies each query's IDs from 'buffer' into 'neighbors' at its output offset)
 		static void restore_query_results_order(const std::vector<PointEntry>& query_order, std::size_t begin, std::size_t end,
-			const std::vector<std::size_t>& buffer, const std::vector<std::size_t>& offsets,
-			std::vector<std::size_t>& neighbors)
+			const std::vector<std::uint32_t>& buffer, const std::vector<std::size_t>& offsets,
+			std::vector<std::uint32_t>& neighbors)
 		{
 			std::size_t source_offset = 0;
 			for (std::size_t i = begin; i < end; i++)
 			{
-				const std::size_t idx = query_order[i].idx;
+				const std::uint32_t idx = query_order[i].idx;
 				const std::size_t count = offsets[idx + 1] - offsets[idx];
 				if (count == 0) { continue; }
 				// copy IDs to the query's output position
@@ -804,9 +806,9 @@ namespace cellmate
 		}
 
 		// TODO: rework to avoid temporary neighbor buffer duplication (huge memory peak)?
-		void query_batch_seq(const float* x, const float* y, const float* z, std::size_t N_queries,
+		void query_batch_seq(const float* x, const float* y, const float* z, std::uint32_t N_queries,
 			BatchScratch& scratch,
-			std::vector<std::size_t>& neighbors,
+			std::vector<std::uint32_t>& neighbors,
 			std::vector<std::size_t>& offsets,
 			QueryOrder order) const
 		{
@@ -816,7 +818,7 @@ namespace cellmate
 				neighbors.clear();
 				offsets[0] = 0;
 				QueryContext& context = thread_context();
-				for (std::size_t i = 0; i < N_queries; i++)
+				for (std::uint32_t i = 0; i < N_queries; i++)
 				{
 					append_neighbors({ x[i], y[i], z[i] }, context, neighbors);
 					offsets[i + 1] = neighbors.size();
@@ -826,7 +828,7 @@ namespace cellmate
 
 			// assign Morton keys and original indices to each query
 			std::vector<PointEntry>& query_order = scratch.query_order_;
-			for (std::size_t i = 0; i < N_queries; i++)
+			for (std::uint32_t i = 0; i < N_queries; i++)
 			{
 				query_order[i] = { query_morton_key({ x[i], y[i], z[i] }), i };
 			}
@@ -836,7 +838,7 @@ namespace cellmate
 				(morton_key(last_cell_[0], last_cell_[1], last_cell_[2]) << 1) | 1u);
 
 			if (scratch.chunk_neighbors_.empty()) { scratch.chunk_neighbors_.resize(1); }
-			std::vector<std::size_t>& buffer = scratch.chunk_neighbors_[0];
+			std::vector<std::uint32_t>& buffer = scratch.chunk_neighbors_[0];
 			buffer.clear();
 			QueryContext& context = thread_context();
 
@@ -845,7 +847,7 @@ namespace cellmate
 			// convert counts into output positions in the caller's original query order
 			// (their sum is already bounded by the size of the single neighbor buffer)
 			std::size_t N_neighbors = 0;
-			for (std::size_t i = 0; i < N_queries; i++)
+			for (std::uint32_t i = 0; i < N_queries; i++)
 			{
 				const std::size_t count = offsets[i];
 				offsets[i] = N_neighbors;
@@ -862,7 +864,7 @@ namespace cellmate
 		// TODO: rework to avoid temporary neighbor buffer duplication (huge memory peak)?
 		void query_batch_par(const float* x, const float* y, const float* z, std::ptrdiff_t N_queries,
 			BatchScratch& scratch,
-			std::vector<std::size_t>& neighbors,
+			std::vector<std::uint32_t>& neighbors,
 			std::vector<std::size_t>& offsets,
 			int N_threads,
 			QueryOrder order) const
@@ -874,11 +876,11 @@ namespace cellmate
 				#pragma omp parallel for schedule(static) num_threads(N_threads)
 				for (std::ptrdiff_t i = 0; i < N_queries; i++)
 				{
-					query_order[i] = { query_morton_key({ x[i], y[i], z[i] }), static_cast<std::size_t>(i) };
+					query_order[i] = { query_morton_key({ x[i], y[i], z[i] }), static_cast<std::uint32_t>(i) };
 				}
 
 				// sort query indices by Morton key
-				const uint64_t max_key = (morton_key(last_cell_[0], last_cell_[1], last_cell_[2]) << 1) | 1u;
+				const std::uint64_t max_key = (morton_key(last_cell_[0], last_cell_[1], last_cell_[2]) << 1) | 1u;
 				// TODO: come up with proper cost measure heuristic to decide between seq and parallel?
 				if (query_order.size() >= N_radix_sort_entries_min_par_)
 				{
@@ -898,7 +900,7 @@ namespace cellmate
 				chunk_size = static_cast<std::ptrdiff_t>(N_batch_chunk_queries_min_);
 			}
 			const std::ptrdiff_t N_chunks = N_queries / chunk_size + (N_queries % chunk_size != 0);
-			std::vector<std::vector<std::size_t>>& chunk_neighbors = scratch.chunk_neighbors_;
+			std::vector<std::vector<std::uint32_t>>& chunk_neighbors = scratch.chunk_neighbors_;
 			// keep inactive chunk buffers when a batch uses fewer chunks
 			if (chunk_neighbors.size() < static_cast<std::size_t>(N_chunks))
 			{
@@ -916,7 +918,7 @@ namespace cellmate
 				try
 				{
 					QueryContext& context = thread_context();
-					std::vector<std::size_t>& buffer = chunk_neighbors[chunk];
+					std::vector<std::uint32_t>& buffer = chunk_neighbors[chunk];
 					buffer.clear();
 					if (order == QueryOrder::morton)
 					{
@@ -967,7 +969,7 @@ namespace cellmate
 			{
 				const std::ptrdiff_t begin = chunk * chunk_size;
 				const std::ptrdiff_t end = begin + (std::min)(chunk_size, N_queries - begin);
-				const std::vector<std::size_t>& buffer = chunk_neighbors[chunk];
+				const std::vector<std::uint32_t>& buffer = chunk_neighbors[chunk];
 				if (order == QueryOrder::morton)
 				{
 					restore_query_results_order(query_order, static_cast<std::size_t>(begin), static_cast<std::size_t>(end),
@@ -983,7 +985,7 @@ namespace cellmate
 #endif
 
 		// copy positions into cell order, while preserving the the mapping to original indices
-		void copy_positions(const float* x, const float* y, const float* z, std::size_t N_points, ComputeMode exec)
+		void copy_positions(const float* x, const float* y, const float* z, std::uint32_t N_points, ComputeMode exec)
 		{
 			copied_ordered_positions_[0].resize(N_points);
 			copied_ordered_positions_[1].resize(N_points);
@@ -997,7 +999,7 @@ namespace cellmate
 				#pragma omp parallel for schedule(static) num_threads(N_threads)
 				for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_points); i++)
 				{
-					const std::size_t idx = point_order_[i].idx;
+					const std::uint32_t idx = point_order_[i].idx;
 					copied_ordered_positions_[0][i] = x[idx];
 					copied_ordered_positions_[1][i] = y[idx];
 					copied_ordered_positions_[2][i] = z[idx];
@@ -1008,9 +1010,9 @@ namespace cellmate
 #else
 			(void)exec;
 #endif
-			for (std::size_t i = 0; i < N_points; i++)
+			for (std::uint32_t i = 0; i < N_points; i++)
 			{
-				const std::size_t idx = point_order_[i].idx;
+				const std::uint32_t idx = point_order_[i].idx;
 				copied_ordered_positions_[0][i] = x[idx];
 				copied_ordered_positions_[1][i] = y[idx];
 				copied_ordered_positions_[2][i] = z[idx];
@@ -1018,12 +1020,12 @@ namespace cellmate
 			}
 		}
 
-		void rebuild_seq(const float* x, const float* y, const float* z, std::size_t N_points)
+		void rebuild_seq(const float* x, const float* y, const float* z, std::uint32_t N_points)
 		{
 			// compute minimum and maximum (x,y,z)
 			std::array<float, 3> minimum{ x[0], y[0], z[0] };
 			std::array<float, 3> maximum = minimum;
-			for (std::size_t i = 0; i < N_points; i++)
+			for (std::uint32_t i = 0; i < N_points; i++)
 			{
 				if (!std::isfinite(x[i]) || !std::isfinite(y[i]) || !std::isfinite(z[i]))
 				{
@@ -1044,17 +1046,17 @@ namespace cellmate
 
 			// assign Morton keys and original indices to each point
 			point_order_.resize(N_points); // TODO: find alternative that grows with extra margin to avoid repeated allocations?
-			for (std::size_t i = 0; i < N_points; i++)
+			for (std::uint32_t i = 0; i < N_points; i++)
 			{
-				const uint32_t cx = cell_coord(x[i], 0);
-				const uint32_t cy = cell_coord(y[i], 1);
-				const uint32_t cz = cell_coord(z[i], 2);
+				const std::uint32_t cx = cell_coord(x[i], 0);
+				const std::uint32_t cy = cell_coord(y[i], 1);
+				const std::uint32_t cz = cell_coord(z[i], 2);
 				point_order_[i] = { morton_key(cx, cy, cz), i };
 			}
 
 			sort_point_order_seq(point_order_, point_order_scratch_,
 				morton_key(last_cell_[0], last_cell_[1], last_cell_[2]));
-			build_cell_table_seq();
+			build_cell_table_seq(N_points);
 		}
 
 #ifdef _OPENMP
@@ -1089,7 +1091,7 @@ namespace cellmate
 #endif
 
 #ifdef _OPENMP
-		void rebuild_par(const float* x, const float* y, const float* z, std::ptrdiff_t N_points, int N_threads)
+		void rebuild_par(const float* x, const float* y, const float* z, std::uint32_t N_points, int N_threads)
 		{
 			// compute minimum and maximum (x,y,z)
 			// (compute local bounds per thread, then merge into grid bounds)
@@ -1103,7 +1105,7 @@ namespace cellmate
 				bool local_invalid = false;
 
 				#pragma omp for schedule(static)
-				for (std::ptrdiff_t i = 0; i < N_points; i++)
+				for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_points); i++)
 				{
 					if (!std::isfinite(x[i]) || !std::isfinite(y[i]) || !std::isfinite(z[i]))
 					{
@@ -1143,12 +1145,12 @@ namespace cellmate
 			// assign Morton keys and original indices to each point in parallel
 			point_order_.resize(N_points);
 			#pragma omp parallel for schedule(static) num_threads(N_threads)
-			for (std::ptrdiff_t i = 0; i < N_points; i++)
+			for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_points); i++)
 			{
-				const uint32_t cx = cell_coord(x[i], 0);
-				const uint32_t cy = cell_coord(y[i], 1);
-				const uint32_t cz = cell_coord(z[i], 2);
-				point_order_[i] = { morton_key(cx, cy, cz), static_cast<std::size_t>(i) };
+				const std::uint32_t cx = cell_coord(x[i], 0);
+				const std::uint32_t cy = cell_coord(y[i], 1);
+				const std::uint32_t cz = cell_coord(z[i], 2);
+				point_order_[i] = { morton_key(cx, cy, cz), static_cast<std::uint32_t>(i) };
 			}
 
 			if (point_order_.size() >= N_radix_sort_entries_min_par_)
@@ -1161,7 +1163,7 @@ namespace cellmate
 				sort_point_order_seq(point_order_, point_order_scratch_,
 					morton_key(last_cell_[0], last_cell_[1], last_cell_[2]));
 			}
-			build_cell_table_par(N_threads);
+			build_cell_table_par(N_points, N_threads);
 		}
 #endif
 
@@ -1171,15 +1173,15 @@ namespace cellmate
 			std::vector<PointEntry>& point_order,
 			std::vector<PointEntry>& point_order_scratch,
 			std::vector<std::array<std::size_t, 256>>& radix_offsets,
-			uint64_t max_key, int N_threads)
+			std::uint64_t max_key, int N_threads)
 		{
 			const std::size_t N_points = point_order.size();
 			if (N_points < 2 || max_key == 0) { return; }
 
 			// determine how many bytes to sort
 			// (1 to 8 radix passes needed for point and query keys)
-			uint32_t N_passes = 0;
-			for (uint64_t key = max_key; key != 0; key >>= 8)
+			std::uint32_t N_passes = 0;
+			for (std::uint64_t key = max_key; key != 0; key >>= 8)
 			{
 				N_passes++;
 			}
@@ -1200,9 +1202,9 @@ namespace cellmate
 			#pragma omp parallel num_threads(N_threads)
 			{
 				// sort bytes from least to most significant
-				for (uint32_t pass = 0; pass < N_passes; pass++)
+				for (std::uint32_t pass = 0; pass < N_passes; pass++)
 				{
-					const uint32_t shift = pass * 8;
+					const std::uint32_t shift = pass * 8;
 
 					// count each byte value separately for each chunk
 					#pragma omp for schedule(static)
@@ -1272,12 +1274,11 @@ namespace cellmate
 
 #ifdef _OPENMP
 		// fill cell table with occupied cell keys and start offsets, parallel version
-		void build_cell_table_par(int N_threads)
+		void build_cell_table_par(std::uint32_t N_points, int N_threads)
 		{
-			const std::size_t N_points = point_order_.size();
-
 			// divide entries into chunks for parallel counting and filling
-			const std::size_t chunk_size = select_chunk_size(N_points, N_threads);
+			// (chunk sizes never exceed the 32-bit point count)
+			const std::uint32_t chunk_size = static_cast<std::uint32_t>(select_chunk_size(N_points, N_threads));
 			const std::ptrdiff_t N_chunks = static_cast<std::ptrdiff_t>(
 				N_points / chunk_size + (N_points % chunk_size != 0));
 			cell_chunk_offsets_.resize(N_chunks);
@@ -1286,10 +1287,10 @@ namespace cellmate
 			#pragma omp parallel for schedule(static) num_threads(N_threads)
 			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 			{
-				const std::size_t begin = static_cast<std::size_t>(chunk) * chunk_size;
-				const std::size_t end = begin + (std::min)(chunk_size, N_points - begin);
+				const std::uint32_t begin = static_cast<std::uint32_t>(chunk) * chunk_size;
+				const std::uint32_t end = begin + (std::min)(chunk_size, N_points - begin);
 				std::size_t count = 0;
-				for (std::size_t i = begin; i < end; i++)
+				for (std::uint32_t i = begin; i < end; i++)
 				{
 					if (i == 0 || point_order_[i].key != point_order_[i - 1].key) { count++; }
 				}
@@ -1314,10 +1315,10 @@ namespace cellmate
 			#pragma omp parallel for schedule(static) num_threads(N_threads)
 			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 			{
-				const std::size_t begin = static_cast<std::size_t>(chunk) * chunk_size;
-				const std::size_t end = begin + (std::min)(chunk_size, N_points - begin);
+				const std::uint32_t begin = static_cast<std::uint32_t>(chunk) * chunk_size;
+				const std::uint32_t end = begin + (std::min)(chunk_size, N_points - begin);
 				std::size_t offset = cell_chunk_offsets_[chunk];
-				for (std::size_t i = begin; i < end; i++)
+				for (std::uint32_t i = begin; i < end; i++)
 				{
 					if (i != 0 && point_order_[i].key == point_order_[i - 1].key) { continue; }
 					cell_keys_[offset] = point_order_[i].key;
@@ -1334,15 +1335,15 @@ namespace cellmate
 		static void sort_point_order_seq(
 			std::vector<PointEntry>& point_order,
 			std::vector<PointEntry>& point_order_scratch,
-			uint64_t max_key)
+			std::uint64_t max_key)
 		{
 			const std::size_t N_points = point_order.size();
 			if (N_points < 2 || max_key == 0) { return; }
 
 			// determine how many bytes to sort
 			// (1 to 8 radix passes needed for point and query keys)
-			uint32_t N_passes = 0;
-			for (uint64_t key = max_key; key != 0; key >>= 8)
+			std::uint32_t N_passes = 0;
+			for (std::uint64_t key = max_key; key != 0; key >>= 8)
 			{
 				N_passes++;
 			}
@@ -1354,9 +1355,9 @@ namespace cellmate
 			PointEntry* dst = point_order_scratch.data();
 
 			// sort bytes from least to most significant
-			for (uint32_t pass = 0; pass < N_passes; pass++)
+			for (std::uint32_t pass = 0; pass < N_passes; pass++)
 			{
-				const uint32_t shift = pass * 8;
+				const std::uint32_t shift = pass * 8;
 
 				// count each byte value
 				counts.fill(0);
@@ -1390,24 +1391,25 @@ namespace cellmate
 		}
 
 		// fill cell table with occupied cell keys and start offsets, sequential version
-		void build_cell_table_seq()
+		void build_cell_table_seq(std::uint32_t N_points)
 		{
 			cell_keys_.clear();
 			cell_starts_.clear();
 
-			const std::size_t N_points = point_order_.size();
-
 			// fill output range while preserving cell order
-			std::size_t begin = 0;
-			for (std::size_t end = 1; end <= N_points; end++)
+			// (closing the last cell after the loop, keeping 'end' within 32 bits)
+			std::uint32_t begin = 0;
+			for (std::uint32_t end = 1; end < N_points; end++)
 			{
-				if (end == N_points || point_order_[end].key != point_order_[begin].key)
+				if (point_order_[end].key != point_order_[begin].key)
 				{
 					cell_keys_.push_back(point_order_[begin].key);
 					cell_starts_.push_back(begin);
 					begin = end;
 				}
 			}
+			cell_keys_.push_back(point_order_[begin].key);
+			cell_starts_.push_back(begin);
 
 			cell_starts_.push_back(N_points); // end of the last cell
 		}
@@ -1431,8 +1433,8 @@ namespace cellmate
 			}
 			cell_prefix_.resize(N_prefixes + 1);
 
-			uint32_t shift = 0;
-			for (uint64_t remaining = cell_keys_.back() / N_prefixes; remaining != 0; remaining >>= 1)
+			std::uint32_t shift = 0;
+			for (std::uint64_t remaining = cell_keys_.back() / N_prefixes; remaining != 0; remaining >>= 1)
 			{
 				shift++;
 			}
@@ -1440,7 +1442,7 @@ namespace cellmate
 			auto first = cell_keys_.begin();
 			for (std::size_t prefix = 0; prefix < N_prefixes; prefix++)
 			{
-				const uint64_t threshold = static_cast<uint64_t>(prefix) << shift;
+				const std::uint64_t threshold = static_cast<std::uint64_t>(prefix) << shift;
 				first = std::lower_bound(first, cell_keys_.end(), threshold);
 				cell_prefix_[prefix] = static_cast<std::size_t>(first - cell_keys_.begin());
 			}
@@ -1449,20 +1451,20 @@ namespace cellmate
 		}
 
 		// reuse the cached result if its key matches, otherwise search and replace it
-		std::size_t find_cell(uint64_t key, QueryContext& context) const
+		std::size_t find_cell(std::uint64_t key, QueryContext& context) const
 		{
 			const std::size_t slot = static_cast<std::size_t>(key ^ (key >> 32)) & (context.cell_cache_.size() - 1);
 			QueryContext::CellCacheEntry& entry = context.cell_cache_[slot];
 			if (entry.key == key) { return entry.idx; }
 
-			const uint64_t* first = cell_keys_.data();
-			const uint64_t* cell = first;
-			const uint64_t* last = first + cell_keys_.size();
+			const std::uint64_t* first = cell_keys_.data();
+			const std::uint64_t* cell = first;
+			const std::uint64_t* last = first + cell_keys_.size();
 
 			// restrict the search to the selected prefix bucket
 			if (cell_prefix_shift_ < 64)
 			{
-				const uint64_t prefix = key >> cell_prefix_shift_;
+				const std::uint64_t prefix = key >> cell_prefix_shift_;
 				if (prefix >= cell_prefix_.size() - 1)
 				{
 					entry.key = key;
@@ -1515,7 +1517,7 @@ namespace cellmate
 		}
 
 		// converts one position coordinate to a cell coordinate relative to the grid origin
-		uint32_t cell_coord(float coordinate, std::size_t axis) const
+		std::uint32_t cell_coord(float coordinate, std::size_t axis) const
 		{
 			const double cell_coordinate = unclamped_cell_coord(coordinate, axis);
 
@@ -1524,12 +1526,12 @@ namespace cellmate
 				throw std::out_of_range("'cellmate::rebuild()' extent exceeds 21-bit cell coordinates");
 			}
 
-			return static_cast<uint32_t>(cell_coordinate);
+			return static_cast<std::uint32_t>(cell_coordinate);
 		}
 
 		// computes the Morton sorting key for a query, clamped to the grid
 		// (uses the low bit to mark if query's cell is outside the grid: 0 = inside, 1 = outside)
-		uint64_t query_morton_key(std::array<float, 3> query_pos) const
+		std::uint64_t query_morton_key(std::array<float, 3> query_pos) const
 		{
 			// determine query's cell relative to the grid origin
 			const double cell_x = unclamped_cell_coord(query_pos[0], 0);
@@ -1542,21 +1544,21 @@ namespace cellmate
 									  cell_z < 0.0 || cell_z > double(last_cell_[2]);
 
 			// clamp cell coordinates to the extent of the grid
-			const uint32_t cx = static_cast<uint32_t>((std::max)(0.0, (std::min)(double(last_cell_[0]), cell_x)));
-			const uint32_t cy = static_cast<uint32_t>((std::max)(0.0, (std::min)(double(last_cell_[1]), cell_y)));
-			const uint32_t cz = static_cast<uint32_t>((std::max)(0.0, (std::min)(double(last_cell_[2]), cell_z)));
+			const std::uint32_t cx = static_cast<std::uint32_t>((std::max)(0.0, (std::min)(double(last_cell_[0]), cell_x)));
+			const std::uint32_t cy = static_cast<std::uint32_t>((std::max)(0.0, (std::min)(double(last_cell_[1]), cell_y)));
+			const std::uint32_t cz = static_cast<std::uint32_t>((std::max)(0.0, (std::min)(double(last_cell_[2]), cell_z)));
 
 			// combo of Morton key + outside-grid bit
-			return (morton_key(cx, cy, cz) << 1) | uint64_t(outside_grid);
+			return (morton_key(cx, cy, cz) << 1) | std::uint64_t(outside_grid);
 		}
 
 		// spreads 21 coordinate bits into bit positions 0, 3, 6, ..., 60 of a 63-bit key
-		static uint64_t spread_bits(uint32_t value)
+		static std::uint64_t spread_bits(std::uint32_t value)
 		{
 #if CELLMATE_DETAIL_HAS_BMI2
 			return _pdep_u64(value, 0x1249249249249249ULL);
 #else
-			uint64_t bits = value;
+			std::uint64_t bits = value;
 
 			bits = (bits | (bits << 32)) & 0x1f00000000ffffULL;
 			bits = (bits | (bits << 16)) & 0x1f0000ff0000ffULL;
@@ -1569,7 +1571,7 @@ namespace cellmate
 		}
 
 		// interleaves three 21-bit coordinates into a single 63-bit Morton key
-		static uint64_t morton_key(uint32_t x, uint32_t y, uint32_t z)
+		static std::uint64_t morton_key(std::uint32_t x, std::uint32_t y, std::uint32_t z)
 		{
 			// 'x' occupies bit positions: 0, 3, 6, ..., 60
 			// 'y' occupies bit positions: 1, 4, 7, ..., 61

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -20,7 +21,7 @@ TEST(NeighborSearchPointStorage, DefaultCopiesPositions)
 	for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
 	{
 		cellmate::NeighborSearch search(1.0f);
-		std::vector<std::size_t> neighbors;
+		std::vector<std::uint32_t> neighbors;
 		{
 			float x[]{ 8.0f, 0.0f, 4.0f, 0.5f };
 			float y[]{ 0.0f, 0.0f, 0.0f, 0.0f };
@@ -29,11 +30,11 @@ TEST(NeighborSearchPointStorage, DefaultCopiesPositions)
 			std::fill(x, x + 4, 100.0f);
 			search.query({ 0.0f, 0.0f, 0.0f }, neighbors);
 			std::sort(neighbors.begin(), neighbors.end());
-			ASSERT_EQ(neighbors, (std::vector<std::size_t>{ 1, 3 }));
+			ASSERT_EQ(neighbors, (std::vector<std::uint32_t>{ 1, 3 }));
 		}
 
 		search.query({ 4.0f, 0.0f, 0.0f }, neighbors);
-		ASSERT_EQ(neighbors, (std::vector<std::size_t>{ 2 }));
+		ASSERT_EQ(neighbors, (std::vector<std::uint32_t>{ 2 }));
 	}
 }
 
@@ -58,15 +59,15 @@ TEST(NeighborSearchPointStorage, CopiesAndMovesKeepTheStorageModeAndPositions)
 		move_assigned = std::move(assigned);
 		search.rebuild(other_x, y, z, 4);
 
-		std::vector<std::size_t> neighbors;
+		std::vector<std::uint32_t> neighbors;
 		for (const cellmate::NeighborSearch* index : { &moved, &move_assigned })
 		{
 			index->query({ 0.0f, 0.0f, 0.0f }, neighbors);
 			std::sort(neighbors.begin(), neighbors.end());
-			ASSERT_EQ(neighbors, (std::vector<std::size_t>{ 1, 3 }));
+			ASSERT_EQ(neighbors, (std::vector<std::uint32_t>{ 1, 3 }));
 		}
 		search.query({ 16.0f, 0.0f, 0.0f }, neighbors);
 		std::sort(neighbors.begin(), neighbors.end());
-		ASSERT_EQ(neighbors, (std::vector<std::size_t>{ 0, 3 }));
+		ASSERT_EQ(neighbors, (std::vector<std::uint32_t>{ 0, 3 }));
 	}
 }

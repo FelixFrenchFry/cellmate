@@ -9,6 +9,7 @@
 #include <cfenv>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <thread>
 #include <vector>
@@ -56,7 +57,8 @@ TEST(NeighborSearchQuery, QueryMatchesBruteForce)
 	cellmate::NeighborSearch search(radius);
 	search.rebuild(points.x.data(), points.y.data(), points.z.data(), N_points);
 
-	std::vector<std::size_t> neighbors, expected;
+	std::vector<std::uint32_t> neighbors;
+	std::vector<std::uint32_t> expected;
 	for (std::size_t i = 0; i < N_points; i++)
 	{
 		const std::array<float, 3> query_pos{ points.x[i], points.y[i], points.z[i] };
@@ -90,7 +92,8 @@ TEST(NeighborSearchQuery, FloatCellBoundsMatchBruteForceAcrossWideExtents)
 			SCOPED_TRACE(::testing::Message() << "'radius' = " << radius << ", 'storage' = " << static_cast<int>(storage));
 			cellmate::NeighborSearch search(radius, storage);
 			search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), cellmate::ComputeMode::seq);
-			std::vector<std::size_t> neighbors, expected;
+			std::vector<std::uint32_t> neighbors;
+			std::vector<std::uint32_t> expected;
 			for (float coordinate : points.x)
 			{
 				for (float query_x : { coordinate, std::nextafter(coordinate, -std::numeric_limits<float>::infinity()),
@@ -139,7 +142,9 @@ TEST(NeighborSearchQuery, CellFaceRoundingMatchesBruteForce)
 		SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage));
 		cellmate::NeighborSearch search(radius, storage);
 		search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), cellmate::ComputeMode::seq);
-		std::vector<std::size_t> neighbors, offsets, expected;
+		std::vector<std::uint32_t> neighbors;
+		std::vector<std::uint32_t> expected;
+		std::vector<std::size_t> offsets;
 		search.query_batch(query_x.data(), query_yz.data(), query_yz.data(), query_x.size(),
 			neighbors, offsets, cellmate::ComputeMode::seq);
 		for (std::size_t i = 0; i < query_x.size(); i++)
@@ -147,7 +152,7 @@ TEST(NeighborSearchQuery, CellFaceRoundingMatchesBruteForce)
 			const std::array<float, 3> query_pos{ query_x[i], 0.0f, 0.0f };
 			cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(),
 				points.x.size(), radius, query_pos, expected);
-			std::vector<std::size_t> row(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
+			std::vector<std::uint32_t> row(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
 			std::sort(row.begin(), row.end());
 			ASSERT_EQ(row, expected) << "batch query x = " << query_x[i];
 
@@ -167,7 +172,7 @@ TEST(NeighborSearchQuery, RangeRemaindersMatchBruteForce)
 		{ 0.0f, 0.0f, 0.0f }, { -2.5f, -2.5f, -2.5f }, { 2.5f, 1.0f, -1.0f }, { 1.75f, -1.75f, 0.5f } } };
 	for (std::size_t N_points = 1; N_points <= 40; N_points++)
 	{
-		const uint32_t seed = 101 + static_cast<uint32_t>(N_points);
+		const std::uint32_t seed = 101 + static_cast<std::uint32_t>(N_points);
 		const cellmate_helpers::PointCloud points = cellmate_helpers::make_uniform_cloud(N_points, seed, -2.0f, 2.0f);
 		std::vector<std::array<float, 3>> queries(external_queries.begin(), external_queries.end());
 		for (std::size_t i = 0; i < N_points; i++)
@@ -180,7 +185,8 @@ TEST(NeighborSearchQuery, RangeRemaindersMatchBruteForce)
 			SCOPED_TRACE(::testing::Message() << "'N_points' = " << N_points << ", 'storage' = " << static_cast<int>(storage));
 			cellmate::NeighborSearch search(radius, storage);
 			search.rebuild(points.x.data(), points.y.data(), points.z.data(), N_points, cellmate::ComputeMode::seq);
-			std::vector<std::size_t> neighbors, expected;
+			std::vector<std::uint32_t> neighbors;
+			std::vector<std::uint32_t> expected;
 			for (const std::array<float, 3>& query_pos : queries)
 			{
 				search.query(query_pos, neighbors);
@@ -204,11 +210,12 @@ TEST(NeighborSearchQuery, DistantFloatQueriesHandleOverflow)
 	{
 		cellmate::NeighborSearch search(1.0f, storage);
 		search.rebuild(x, yz, yz, 1);
-		std::vector<std::size_t> neighbors, offsets;
+		std::vector<std::uint32_t> neighbors;
+		std::vector<std::size_t> offsets;
 		search.query({ -far, 0.0f, 0.0f }, neighbors);
 		ASSERT_TRUE(neighbors.empty());
 		search.query_batch(query_x, query_yz, query_yz, 2, neighbors, offsets);
-		ASSERT_EQ(neighbors, (std::vector<std::size_t>{ 0 }));
+		ASSERT_EQ(neighbors, (std::vector<std::uint32_t>{ 0 }));
 		ASSERT_EQ(offsets, (std::vector<std::size_t>{ 0, 0, 1 }));
 	}
 }
@@ -218,13 +225,14 @@ TEST(NeighborSearchQuery, TwoOccupiedCellsPreserveResults)
 {
 	const float x[]{ 0.0f, 3.0f }, y[2]{}, z[2]{};
 	const float query_x[]{ 3.0f, 1.5f, 0.0f, 3.0f, 1.5f }, query_yz[5]{};
-	const std::vector<std::size_t> expected[]{ { 1 }, {}, { 0 }, { 1 }, {} };
+	const std::vector<std::uint32_t> expected[]{ { 1 }, {}, { 0 }, { 1 }, {} };
 	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
 	{
 		SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage));
 		cellmate::NeighborSearch search(1.0f, storage);
 		search.rebuild(x, y, z, 2, cellmate::ComputeMode::seq);
-		std::vector<std::size_t> neighbors, offsets;
+		std::vector<std::uint32_t> neighbors;
+		std::vector<std::size_t> offsets;
 		for (std::size_t i = 0; i < 5; i++)
 		{
 			search.query({ query_x[i], 0.0f, 0.0f }, neighbors);
@@ -232,7 +240,7 @@ TEST(NeighborSearchQuery, TwoOccupiedCellsPreserveResults)
 		}
 		search.query_batch(query_x, query_yz, query_yz, 5, neighbors, offsets, cellmate::ComputeMode::seq);
 		ASSERT_EQ(offsets, (std::vector<std::size_t>{ 0, 1, 1, 2, 3, 3 }));
-		ASSERT_EQ(neighbors, (std::vector<std::size_t>{ 1, 0, 1 }));
+		ASSERT_EQ(neighbors, (std::vector<std::uint32_t>{ 1, 0, 1 }));
 	}
 }
 
@@ -242,13 +250,13 @@ TEST(NeighborSearchQuery, RepeatedBoundsPreserveDistanceFiltering)
 	const float x[]{ 0.0f, 0.2f, 0.6f, 1.2f, 1.8f, 2.0f, 2.9f, 4.0f };
 	const float y[8]{}, z[8]{};
 	const float query_x[]{ 1.25f, 1.75f, 1.25f, 1.75f };
-	const std::vector<std::size_t> expected[]{ { 2, 3, 4, 5 }, { 3, 4, 5 } };
+	const std::vector<std::uint32_t> expected[]{ { 2, 3, 4, 5 }, { 3, 4, 5 } };
 	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
 	{
 		SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage));
 		cellmate::NeighborSearch search(1.0f, storage);
 		search.rebuild(x, y, z, 8, cellmate::ComputeMode::seq);
-		std::vector<std::size_t> neighbors;
+		std::vector<std::uint32_t> neighbors;
 		for (std::size_t i = 0; i < 4; i++)
 		{
 			search.query({ query_x[i], 0.0f, 0.0f }, neighbors);
@@ -262,13 +270,14 @@ TEST(NeighborSearchQuery, ClampedQueryCellsPreserveResults)
 {
 	const float x[]{ 0.0f, 0.5f, 1.5f, 4.0f }, y[4]{}, z[4]{};
 	const float query_x[]{ -0.75f, 0.75f, -100.0f, -0.75f, 0.75f };
-	const std::vector<std::size_t> expected[]{ { 0 }, { 0, 1, 2 }, {}, { 0 }, { 0, 1, 2 } };
+	const std::vector<std::uint32_t> expected[]{ { 0 }, { 0, 1, 2 }, {}, { 0 }, { 0, 1, 2 } };
 	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
 	{
 		SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage));
 		cellmate::NeighborSearch search(1.0f, storage);
 		search.rebuild(x, y, z, 4, cellmate::ComputeMode::seq);
-		std::vector<std::size_t> neighbors, offsets;
+		std::vector<std::uint32_t> neighbors;
+		std::vector<std::size_t> offsets;
 		for (std::size_t i = 0; i < 5; i++)
 		{
 			search.query({ query_x[i], 0.0f, 0.0f }, neighbors);
@@ -285,7 +294,7 @@ TEST(NeighborSearchQuery, ClampedQueryCellsPreserveResults)
 			ASSERT_EQ(offsets.back(), neighbors.size());
 			for (std::size_t i = 0; i < 5; i++)
 			{
-				const std::vector<std::size_t> row(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
+				const std::vector<std::uint32_t> row(neighbors.begin() + offsets[i], neighbors.begin() + offsets[i + 1]);
 				ASSERT_EQ(row, expected[i]) << "query index = " << i;
 			}
 		}
@@ -297,7 +306,7 @@ TEST(NeighborSearchQuery, ClampedQueryCellsPreserveResults)
 TEST(NeighborSearchQuery, ConcurrentQueriesMatchBruteForce)
 {
 	const auto points = cellmate_helpers::make_uniform_cloud(10003, 91, -5.0f, 5.0f);
-	std::vector<std::vector<std::size_t>> expected(32);
+	std::vector<std::vector<std::uint32_t>> expected(32);
 	for (std::size_t i = 0; i < expected.size(); i++)
 	{
 		cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(), points.x.size(),
@@ -313,7 +322,7 @@ TEST(NeighborSearchQuery, ConcurrentQueriesMatchBruteForce)
 		{
 			threads[thread] = std::thread([&, thread]()
 			{
-				std::vector<std::size_t> neighbors;
+				std::vector<std::uint32_t> neighbors;
 				for (std::size_t i = 0; i < expected.size(); i++)
 				{
 					search.query({ points.x[i], points.y[i], points.z[i] }, neighbors);
