@@ -98,7 +98,7 @@ namespace cellmate
 				copied_ordered_positions_[0].clear();
 				copied_ordered_positions_[1].clear();
 				copied_ordered_positions_[2].clear();
-				copied_ordered_indices_.clear();
+				ordered_indices_.clear();
 				return;
 			}
 			if (N_points > (std::numeric_limits<std::uint32_t>::max)())
@@ -284,7 +284,7 @@ namespace cellmate
 		PointAccess point_access_;
 		std::array<const float*, 3> positions_{};
 		std::array<std::vector<float>, 3> copied_ordered_positions_;
-		std::vector<std::uint32_t> copied_ordered_indices_;
+		std::vector<std::uint32_t> ordered_indices_;
 		std::array<float, 3> origin_{};
 		std::array<std::uint32_t, 3> last_cell_{};
 		std::vector<PointEntry> point_order_;
@@ -511,7 +511,7 @@ namespace cellmate
 					unsigned mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i);
 					if (use_buffer)
 					{
-						N_buffered += detail::pack_contiguous_indices(copied_ordered_indices_.data() + i, mask, buffer + N_buffered);
+						N_buffered += detail::pack_contiguous_indices(ordered_indices_.data() + i, mask, buffer + N_buffered);
 						if (N_buffered >= N_nbr_buffer_size_)
 						{
 							flush_neighbor_buffer(neighbors, buffer, N_buffered);
@@ -522,7 +522,7 @@ namespace cellmate
 						while (mask != 0)
 						{
 							const unsigned lane = detail::first_set_bit(mask);
-							neighbors.push_back(point_order_[i + lane].idx);
+							neighbors.push_back(ordered_indices_[i + lane]);
 							mask &= mask - 1;
 						}
 					}
@@ -530,12 +530,12 @@ namespace cellmate
 
 				// check remaining candidate points as one masked SIMD batch
 				// (masked lanes may read past the range end but never past the array end)
-				if (end > i && point_order_.size() - i >= detail::DistQuery::N_lanes)
+				if (end > i && ordered_indices_.size() - i >= detail::DistQuery::N_lanes)
 				{
 					unsigned mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i) & ((1u << (end - i)) - 1u);
 					if (use_buffer)
 					{
-						N_buffered += detail::pack_contiguous_indices(copied_ordered_indices_.data() + i, mask, buffer + N_buffered);
+						N_buffered += detail::pack_contiguous_indices(ordered_indices_.data() + i, mask, buffer + N_buffered);
 						if (N_buffered >= N_nbr_buffer_size_)
 						{
 							flush_neighbor_buffer(neighbors, buffer, N_buffered);
@@ -546,7 +546,7 @@ namespace cellmate
 						while (mask != 0)
 						{
 							const unsigned lane = detail::first_set_bit(mask);
-							neighbors.push_back(point_order_[i + lane].idx);
+							neighbors.push_back(ordered_indices_[i + lane]);
 							mask &= mask - 1;
 						}
 					}
@@ -558,12 +558,12 @@ namespace cellmate
 			// (or for remainders too close to the array end for a full SIMD batch)
 			for (; i < end; i++)
 			{
-				const std::size_t idx = copied ? i : point_order_[i].idx;
+				const std::size_t idx = copied ? i : ordered_indices_[i];
 				if (dist_query.contains(positions[0][idx], positions[1][idx], positions[2][idx]))
 				{
 					if (use_buffer)
 					{
-						buffer[N_buffered++] = point_order_[i].idx;
+						buffer[N_buffered++] = ordered_indices_[i];
 						if (N_buffered >= N_nbr_buffer_size_)
 						{
 							flush_neighbor_buffer(neighbors, buffer, N_buffered);
@@ -571,7 +571,7 @@ namespace cellmate
 					}
 					else
 					{
-						neighbors.push_back(point_order_[i].idx);
+						neighbors.push_back(ordered_indices_[i]);
 					}
 				}
 			}
@@ -615,14 +615,14 @@ namespace cellmate
 					// check candidates in full SIMD batches, masking the range's last batch
 					// (masked lanes may read past the range end, never past the array end)
 					std::size_t i = range.begin;
-					while (i < range.end && point_order_.size() - i >= N_lanes)
+					while (i < range.end && ordered_indices_.size() - i >= N_lanes)
 					{
 						unsigned mask = dist_box.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i);
 						if (range.end - i < N_lanes) { mask &= (1u << (range.end - i)) - 1u; }
 						detail::pack_contiguous_floats(positions[0] + i, mask, staged[0] + N_staged);
 						detail::pack_contiguous_floats(positions[1] + i, mask, staged[1] + N_staged);
 						detail::pack_contiguous_floats(positions[2] + i, mask, staged[2] + N_staged);
-						N_staged += detail::pack_contiguous_indices(copied_ordered_indices_.data() + i, mask, staged_indices + N_staged);
+						N_staged += detail::pack_contiguous_indices(ordered_indices_.data() + i, mask, staged_indices + N_staged);
 						i += N_lanes;
 					}
 
@@ -632,7 +632,7 @@ namespace cellmate
 						staged[0][N_staged] = positions[0][i];
 						staged[1][N_staged] = positions[1][i];
 						staged[2][N_staged] = positions[2][i];
-						staged_indices[N_staged] = copied_ordered_indices_[i];
+						staged_indices[N_staged] = ordered_indices_[i];
 						N_staged++;
 					}
 				}
@@ -645,7 +645,7 @@ namespace cellmate
 				{
 					for (std::size_t i = range.begin; i < range.end; i++)
 					{
-						const std::uint32_t idx = point_order_[i].idx;
+						const std::uint32_t idx = ordered_indices_[i];
 						staged[0][N_gathered] = positions_[0][idx];
 						staged[1][N_gathered] = positions_[1][idx];
 						staged[2][N_gathered] = positions_[2][idx];
@@ -984,13 +984,12 @@ namespace cellmate
 		}
 #endif
 
-		// copy positions into cell order, while preserving the the mapping to original indices
+		// copy positions into cell order, matching the ordered original indices
 		void copy_positions(const float* x, const float* y, const float* z, std::uint32_t N_points, ComputeMode exec)
 		{
 			copied_ordered_positions_[0].resize(N_points);
 			copied_ordered_positions_[1].resize(N_points);
 			copied_ordered_positions_[2].resize(N_points);
-			copied_ordered_indices_.resize(N_points);
 
 #ifdef _OPENMP
 			const int N_threads = select_thread_count(N_points, exec, N_rebuild_points_min_par_);
@@ -999,11 +998,10 @@ namespace cellmate
 				#pragma omp parallel for schedule(static) num_threads(N_threads)
 				for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_points); i++)
 				{
-					const std::uint32_t idx = point_order_[i].idx;
+					const std::uint32_t idx = ordered_indices_[i];
 					copied_ordered_positions_[0][i] = x[idx];
 					copied_ordered_positions_[1][i] = y[idx];
 					copied_ordered_positions_[2][i] = z[idx];
-					copied_ordered_indices_[i] = idx;
 				}
 				return;
 			}
@@ -1012,11 +1010,10 @@ namespace cellmate
 #endif
 			for (std::uint32_t i = 0; i < N_points; i++)
 			{
-				const std::uint32_t idx = point_order_[i].idx;
+				const std::uint32_t idx = ordered_indices_[i];
 				copied_ordered_positions_[0][i] = x[idx];
 				copied_ordered_positions_[1][i] = y[idx];
 				copied_ordered_positions_[2][i] = z[idx];
-				copied_ordered_indices_[i] = idx;
 			}
 		}
 
@@ -1273,7 +1270,7 @@ namespace cellmate
 #endif
 
 #ifdef _OPENMP
-		// fill cell table with occupied cell keys and start offsets, parallel version
+		// fill cell table with occupied cell keys, start offsets, and ordered original indices, parallel version
 		void build_cell_table_par(std::uint32_t N_points, int N_threads)
 		{
 			// divide entries into chunks for parallel counting and filling
@@ -1310,6 +1307,7 @@ namespace cellmate
 			// (no clearing needed, every entry is overwritten below)
 			cell_keys_.resize(N_cells);
 			cell_starts_.resize(N_cells + 1);
+			ordered_indices_.resize(N_points);
 
 			// fill each chunk's output range while preserving cell order
 			#pragma omp parallel for schedule(static) num_threads(N_threads)
@@ -1320,6 +1318,7 @@ namespace cellmate
 				std::size_t offset = cell_chunk_offsets_[chunk];
 				for (std::uint32_t i = begin; i < end; i++)
 				{
+					ordered_indices_[i] = point_order_[i].idx;
 					if (i != 0 && point_order_[i].key == point_order_[i - 1].key) { continue; }
 					cell_keys_[offset] = point_order_[i].key;
 					cell_starts_[offset] = i;
@@ -1390,17 +1389,20 @@ namespace cellmate
 			if (src != point_order.data()) { point_order.swap(point_order_scratch); }
 		}
 
-		// fill cell table with occupied cell keys and start offsets, sequential version
+		// fill cell table with occupied cell keys, start offsets, and ordered original indices, sequential version
 		void build_cell_table_seq(std::uint32_t N_points)
 		{
 			cell_keys_.clear();
 			cell_starts_.clear();
+			ordered_indices_.resize(N_points);
 
 			// fill output range while preserving cell order
 			// (closing the last cell after the loop, keeping 'end' within 32 bits)
 			std::uint32_t begin = 0;
+			ordered_indices_[0] = point_order_[0].idx;
 			for (std::uint32_t end = 1; end < N_points; end++)
 			{
+				ordered_indices_[end] = point_order_[end].idx;
 				if (point_order_[end].key != point_order_[begin].key)
 				{
 					cell_keys_.push_back(point_order_[begin].key);
