@@ -260,13 +260,26 @@ namespace cellmate
 			std::size_t N_staged_ = 0;
 		};
 
-		// Morton key and original index of a point or query
-		// TODO: go without struct?
+		// 64-bit Morton key and original index of a point or query
 		struct PointEntry
 		{
-			std::uint64_t key;
+			// 64-bit key split into two 32-bit parts
+			// (avoids padding the 12 byte struct to 16 bytes)
+			std::uint32_t key_low;
+			std::uint32_t key_high;
 			std::uint32_t idx;
+
+			PointEntry() = default;
+			PointEntry(std::uint64_t value, std::uint32_t index) noexcept
+				: key_low(static_cast<std::uint32_t>(value)),
+				  key_high(static_cast<std::uint32_t>(value >> 32)), idx(index) {}
+
+			std::uint64_t key() const noexcept
+			{
+				return std::uint64_t(key_low) | (std::uint64_t(key_high) << 32);
+			}
 		};
+		static_assert(sizeof(PointEntry) == 12, "PointEntry must occupy 12 bytes");
 
 		// reusable batch storage, shared by successive searches on one calling thread
 		// (retains capacity until thread exit, without retaining input or output pointers)
@@ -738,9 +751,9 @@ namespace cellmate
 				// collect consecutive queries with the same candidate cell bounds into a group
 				// (stops at a different key or the end of the chunk, queries outside the grid stay alone)
 				std::size_t group_end = i + 1;
-				if ((entry.key & 1u) == 0)
+				if ((entry.key() & 1u) == 0)
 				{
-					while (group_end < end && query_order[group_end].key == entry.key) { group_end++; }
+					while (group_end < end && query_order[group_end].key() == entry.key()) { group_end++; }
 				}
 
 				// process a large group's queries together with staged candidates, or
@@ -1213,7 +1226,7 @@ namespace cellmate
 						counts.fill(0);
 						for (std::size_t i = begin; i < end; i++)
 						{
-							counts[(src[i].key >> shift) & 255]++;
+							counts[(src[i].key() >> shift) & 255]++;
 						}
 					}
 
@@ -1252,7 +1265,7 @@ namespace cellmate
 						std::array<std::size_t, 256>& offsets = radix_offsets[chunk];
 						for (std::size_t i = begin; i < end; i++)
 						{
-							const std::size_t digit = (src[i].key >> shift) & 255;
+							const std::size_t digit = (src[i].key() >> shift) & 255;
 							dst[digit_offsets[digit] + offsets[digit]++] = src[i];
 						}
 					}
@@ -1289,7 +1302,7 @@ namespace cellmate
 				std::size_t count = 0;
 				for (std::uint32_t i = begin; i < end; i++)
 				{
-					if (i == 0 || point_order_[i].key != point_order_[i - 1].key) { count++; }
+					if (i == 0 || point_order_[i].key() != point_order_[i - 1].key()) { count++; }
 				}
 				cell_chunk_offsets_[chunk] = count;
 			}
@@ -1319,8 +1332,8 @@ namespace cellmate
 				for (std::uint32_t i = begin; i < end; i++)
 				{
 					ordered_indices_[i] = point_order_[i].idx;
-					if (i != 0 && point_order_[i].key == point_order_[i - 1].key) { continue; }
-					cell_keys_[offset] = point_order_[i].key;
+					if (i != 0 && point_order_[i].key() == point_order_[i - 1].key()) { continue; }
+					cell_keys_[offset] = point_order_[i].key();
 					cell_starts_[offset] = i;
 					offset++;
 				}
@@ -1362,7 +1375,7 @@ namespace cellmate
 				counts.fill(0);
 				for (std::size_t i = 0; i < N_points; i++)
 				{
-					counts[(src[i].key >> shift) & 255]++;
+					counts[(src[i].key() >> shift) & 255]++;
 				}
 
 				// convert counts into output positions in byte order
@@ -1378,7 +1391,7 @@ namespace cellmate
 				// scatter entries while preserving equal-byte order
 				for (std::size_t i = 0; i < N_points; i++)
 				{
-					const std::size_t digit = (src[i].key >> shift) & 255;
+					const std::size_t digit = (src[i].key() >> shift) & 255;
 					dst[offsets[digit]++] = src[i];
 				}
 
@@ -1403,14 +1416,14 @@ namespace cellmate
 			for (std::uint32_t end = 1; end < N_points; end++)
 			{
 				ordered_indices_[end] = point_order_[end].idx;
-				if (point_order_[end].key != point_order_[begin].key)
+				if (point_order_[end].key() != point_order_[begin].key())
 				{
-					cell_keys_.push_back(point_order_[begin].key);
+					cell_keys_.push_back(point_order_[begin].key());
 					cell_starts_.push_back(begin);
 					begin = end;
 				}
 			}
-			cell_keys_.push_back(point_order_[begin].key);
+			cell_keys_.push_back(point_order_[begin].key());
 			cell_starts_.push_back(begin);
 
 			cell_starts_.push_back(N_points); // end of the last cell
