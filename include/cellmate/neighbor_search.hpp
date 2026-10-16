@@ -314,6 +314,7 @@ namespace cellmate
 
 		static constexpr std::size_t N_nbr_buffer_size_ = 64;
 		static constexpr std::size_t N_queries_min_staged_ = 3;
+		static constexpr std::size_t N_queries_min_scalar_staged_ = 6;
 		// minimum sizes for running parallelized operations with the full team instead of sequentially
 		static constexpr std::size_t N_rebuild_points_min_par_ = 8192;
 		static constexpr std::size_t N_radix_sort_entries_min_par_ = 8192;
@@ -584,7 +585,7 @@ namespace cellmate
 			}
 		}
 
-		// stages candidates for a query group using shared candidate ranges and SIMD bounding box filtering
+		// stages candidates for a query group using shared candidate ranges and bounding box filtering
 		// (keeps candidates within the radius of the bounding box of a query group, in traversal order)
 		void stage_query_group_candidates(std::array<float, 3> first, std::array<float, 3> last, QueryContext& context) const
 		{
@@ -612,11 +613,13 @@ namespace cellmate
 			std::uint32_t* staged_indices = context.staged_indices_.data();
 			std::size_t N_staged = 0;
 
-			const detail::DistBox dist_box(first, last, radius_squ_);
 			if (point_access_ == PointAccess::cpy)
 			{
-				// check candidates against the box directly
-				const float* positions[3]{ copied_ordered_positions_[0].data(), copied_ordered_positions_[1].data(), copied_ordered_positions_[2].data() };
+				// filter candidates against the box directly
+				const detail::DistBox dist_box(first, last, radius_squ_);
+				const float* positions[3]{ copied_ordered_positions_[0].data(),
+										   copied_ordered_positions_[1].data(),
+										   copied_ordered_positions_[2].data() };
 				for (const QueryContext::PointRange& range : context.point_ranges_)
 				{
 					// check candidates in full SIMD batches, masking the range's last batch
@@ -644,39 +647,29 @@ namespace cellmate
 					}
 				}
 			}
-			else
+			else // 'PointAccess::ref'
 			{
-				// gather candidate positions and IDs through the point order
-				std::size_t N_gathered = 0;
+				// filter candidates against the box while gathering them through the point order
+				// (rejected candidates are overwritten by the next one)
+				const detail::DistBoxScalar scalar_box(first, last, radius_squ_);
 				for (const QueryContext::PointRange& range : context.point_ranges_)
 				{
 					for (std::size_t i = range.begin; i < range.end; i++)
 					{
 						const std::uint32_t idx = ordered_indices_[i];
-						staged[0][N_gathered] = positions_[0][idx];
-						staged[1][N_gathered] = positions_[1][idx];
-						staged[2][N_gathered] = positions_[2][idx];
-						staged_indices[N_gathered] = idx;
-						N_gathered++;
+						const float px = positions_[0][idx], py = positions_[1][idx], pz = positions_[2][idx];
+						staged[0][N_staged] = px;
+						staged[1][N_staged] = py;
+						staged[2][N_staged] = pz;
+						staged_indices[N_staged] = idx;
+						N_staged += scalar_box.contains(px, py, pz);
 					}
-				}
-
-				// check gathered candidates against the box in full SIMD batches, packing in place
-				// (each batch is loaded before it is stored, never past unread candidates)
-				for (std::size_t i = 0; i < N_gathered; i += N_lanes)
-				{
-					unsigned mask = dist_box.neighbor_mask(staged[0] + i, staged[1] + i, staged[2] + i);
-					if (N_gathered - i < N_lanes) { mask &= (1u << (N_gathered - i)) - 1u; }
-					detail::pack_contiguous_floats(staged[0] + i, mask, staged[0] + N_staged);
-					detail::pack_contiguous_floats(staged[1] + i, mask, staged[1] + N_staged);
-					detail::pack_contiguous_floats(staged[2] + i, mask, staged[2] + N_staged);
-					N_staged += detail::pack_contiguous_indices(staged_indices + i, mask, staged_indices + N_staged);
 				}
 			}
 			context.N_staged_ = N_staged;
 		}
 
-		// finds neighbors for one query using staged candidates and SIMD distance checks
+		// finds neighbors for one query using staged candidates and the selected distance check backend
 		// (appends matching point IDs to 'neighbors', preserving existing entries)
 		void find_neighbors_from_staged(std::array<float, 3> query_pos, const QueryContext& context,
 			std::vector<std::uint32_t>& neighbors) const
@@ -690,7 +683,20 @@ namespace cellmate
 			const std::uint32_t* staged_indices = context.staged_indices_.data();
 			const std::size_t N_staged = context.N_staged_;
 
+			// check candidate points in scalar way, skip SIMD batching stuff
 			const detail::DistQuery dist_query(query_pos, radius_squ_);
+			if (detail::is_scalar_backend)
+			{
+				for (std::size_t i = 0; i < N_staged; i++)
+				{
+					if (dist_query.contains(staged[0][i], staged[1][i], staged[2][i]))
+					{
+						neighbors.push_back(staged_indices[i]);
+					}
+				}
+				return;
+			}
+
 			// allow a full-width store when a candidate SIMD batch crosses the flush threshold
 			std::uint32_t buffer[N_nbr_buffer_size_ + detail::DistQuery::N_lanes - 1];
 			std::size_t N_buffered = 0;
@@ -750,9 +756,14 @@ namespace cellmate
 					while (group_end < end && query_order[group_end].key() == entry.key()) { group_end++; }
 				}
 
+				// use shared candidate staging when the query group can amortize its preparation cost
+				const bool use_candidate_staging = group_end - i >= (detail::is_scalar_backend
+					? N_queries_min_scalar_staged_
+					: N_queries_min_staged_);
+
 				// process a large group's queries together with staged candidates, or
 				// process a small group's queries individually with the gathered ranges
-				if (detail::has_index_compaction && group_end - i >= N_queries_min_staged_) // large group
+				if (use_candidate_staging) // large group
 				{
 					// stage candidates within the radius of the group's bounding box
 					std::array<float, 3> first{ x[entry.idx], y[entry.idx], z[entry.idx] };
@@ -760,8 +771,12 @@ namespace cellmate
 					for (std::size_t k = i + 1; k < group_end; k++)
 					{
 						const std::uint32_t idx = query_order[k].idx;
-						first = { (std::min)(first[0], x[idx]), (std::min)(first[1], y[idx]), (std::min)(first[2], z[idx]) };
-						last = { (std::max)(last[0], x[idx]), (std::max)(last[1], y[idx]), (std::max)(last[2], z[idx]) };
+						first = { (std::min)(first[0], x[idx]),
+								  (std::min)(first[1], y[idx]),
+								  (std::min)(first[2], z[idx]) };
+						last = { (std::max)(last[0], x[idx]),
+								 (std::max)(last[1], y[idx]),
+								 (std::max)(last[2], z[idx]) };
 					}
 					stage_query_group_candidates(first, last, context);
 

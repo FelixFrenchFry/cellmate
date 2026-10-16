@@ -75,6 +75,8 @@ namespace cellmate
 {
 	namespace detail
 	{
+		constexpr bool is_scalar_backend = DistQuery::N_lanes == 1;
+
 		// index of the lowest set bit in a nonzero mask
 		inline unsigned first_set_bit(unsigned mask) noexcept
 		{
