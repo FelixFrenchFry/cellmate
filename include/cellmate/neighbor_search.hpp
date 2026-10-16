@@ -14,14 +14,8 @@
 
 #include "detail/index_compaction.hpp"
 
-// use BMI2 PDEP for Morton encoding when the compiler target guarantees it
-// (fallback to bit-shifts and masks)
-#if (defined(_M_X64) || defined(__x86_64__)) && !defined(_M_ARM64EC) && \
-	(defined(__BMI2__) || (defined(_MSC_VER) && !defined(__clang__) && defined(__AVX2__)))
-#define CELLMATE_DETAIL_HAS_BMI2 1
-#include <immintrin.h>
-#else
-#define CELLMATE_DETAIL_HAS_BMI2 0
+#if (defined(_M_X64) || defined(__x86_64__)) && !defined(_M_ARM64EC)
+#include <emmintrin.h>
 #endif
 
 #ifdef _OPENMP
@@ -1570,9 +1564,6 @@ namespace cellmate
 		// spreads 21 coordinate bits into bit positions 0, 3, 6, ..., 60 of a 63-bit key
 		static std::uint64_t spread_bits(std::uint32_t value)
 		{
-#if CELLMATE_DETAIL_HAS_BMI2
-			return _pdep_u64(value, 0x1249249249249249ULL);
-#else
 			std::uint64_t bits = value;
 
 			bits = (bits | (bits << 32)) & 0x1f00000000ffffULL;
@@ -1582,16 +1573,29 @@ namespace cellmate
 			bits = (bits | (bits << 2)) & 0x1249249249249249ULL;
 
 			return bits;
-#endif
 		}
 
 		// interleaves three 21-bit coordinates into a single 63-bit Morton key
+		// 'x' occupies bit positions: 0, 3, 6, ..., 60
+		// 'y' occupies bit positions: 1, 4, 7, ..., 61
+		// 'z' occupies bit positions: 2, 5, 8, ..., 62
 		static std::uint64_t morton_key(std::uint32_t x, std::uint32_t y, std::uint32_t z)
 		{
-			// 'x' occupies bit positions: 0, 3, 6, ..., 60
-			// 'y' occupies bit positions: 1, 4, 7, ..., 61
-			// 'z' occupies bit positions: 2, 5, 8, ..., 62
+#if (defined(_M_X64) || defined(__x86_64__)) && !defined(_M_ARM64EC)
+			// spread x and y together in the two 64-bit SSE2 lanes, z with scalar shifts
+			__m128i xy = _mm_set_epi64x(y, x);
+			xy = _mm_and_si128(_mm_or_si128(xy, _mm_slli_epi64(xy, 32)), _mm_set1_epi64x(0x1f00000000ffffULL));
+			xy = _mm_and_si128(_mm_or_si128(xy, _mm_slli_epi64(xy, 16)), _mm_set1_epi64x(0x1f0000ff0000ffULL));
+			xy = _mm_and_si128(_mm_or_si128(xy, _mm_slli_epi64(xy, 8)), _mm_set1_epi64x(0x100f00f00f00f00fULL));
+			xy = _mm_and_si128(_mm_or_si128(xy, _mm_slli_epi64(xy, 4)), _mm_set1_epi64x(0x10c30c30c30c30c3ULL));
+			xy = _mm_and_si128(_mm_or_si128(xy, _mm_slli_epi64(xy, 2)), _mm_set1_epi64x(0x1249249249249249ULL));
+			const std::uint64_t spread_x = static_cast<std::uint64_t>(_mm_cvtsi128_si64(xy));
+			const std::uint64_t spread_y = static_cast<std::uint64_t>(_mm_cvtsi128_si64(_mm_srli_si128(xy, 8)));
+			return spread_x | (spread_y << 1) | (spread_bits(z) << 2);
+#else
+			// fallback, spreading each coordinate separately and combining them
 			return spread_bits(x) | (spread_bits(y) << 1) | (spread_bits(z) << 2);
+#endif
 		}
 	};
 }
