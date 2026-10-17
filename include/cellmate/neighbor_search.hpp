@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "detail/index_compaction.hpp"
+#include "detail/positions.hpp"
 
 #if (defined(_M_X64) || defined(__x86_64__)) && !defined(_M_ARM64EC)
 #include <emmintrin.h>
@@ -74,10 +75,30 @@ namespace cellmate
 			cell_width_inv_ = 1.0 / (double(radius_) * (1.0 + std::ldexp(1.0, -20))); // slightly wider than the radius to absorb rounding
 		}
 
+		// SoA input positions: (x, y, z) as 3 separate float arrays
+		// (e.g. 3 std::vector<float>, 3 std::array<float, N>, 3 float[N] arrays, ...)
 		// TODO: XML documentation?
 		void rebuild(const float* x, const float* y, const float* z, std::size_t N_points, ComputeMode exec = ComputeMode::par)
 		{
-			positions_ = {};
+			rebuild_positions(detail::Positions_SoA{ x, y, z }, N_points, exec);
+		}
+
+		// AoS input positions: (x, y, z) as 3 consecutive floats, with the points 'stride_bytes' apart
+		// (e.g. std::array<float, 3>, glm::vec3, Eigen::Vector3f, cv::Point3f, pcl::PointXYZ, ...)
+		// TODO: XML documentation?
+		void rebuild(const float* xyz, std::size_t N_points, std::size_t stride_bytes, ComputeMode exec = ComputeMode::par)
+		{
+			rebuild_positions(detail::Positions_AoS{ xyz, stride_bytes }, N_points, exec);
+		}
+
+	private:
+
+		// TODO: XML documentation?
+		template<class Positions>
+		void rebuild_positions(const Positions& positions, std::size_t N_points, ComputeMode exec)
+		{
+			soa_positions_ = {};
+			aos_positions_ = {};
 			build_id_.reset();
 			cell_prefix_.clear();
 			cell_prefix_shift_ = 64;
@@ -99,9 +120,9 @@ namespace cellmate
 			{
 				throw std::length_error("'cellmate::rebuild()' 'N_points' exceeds 32-bit point count limits");
 			}
-			if (!x || !y || !z)
+			if (!positions.valid(N_points))
 			{
-				throw std::invalid_argument("'cellmate::rebuild()' requires three coordinate arrays");
+				throw std::invalid_argument("'cellmate::rebuild()' requires non-null positions (and a valid 'stride_bytes' for AoS input)");
 			}
 
 #ifdef _OPENMP
@@ -110,23 +131,29 @@ namespace cellmate
 			if (exec == ComputeMode::par && N_threads > 1 &&
 				N_points <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
-				rebuild_par(x, y, z, N_points, N_threads);
+				rebuild_par(positions, static_cast<std::uint32_t>(N_points), N_threads);
 			}
 			else
 			{
-				rebuild_seq(x, y, z, N_points);
+				rebuild_seq(positions, static_cast<std::uint32_t>(N_points));
 			}
 #else
 			(void)exec;
-			rebuild_seq(x, y, z, N_points);
+			rebuild_seq(positions, static_cast<std::uint32_t>(N_points));
 #endif
 
 			build_cell_prefix_directory();
 
-			if (point_access_ == PointAccess::cpy) { copy_positions(x, y, z, N_points, exec); }
+			if (point_access_ == PointAccess::cpy) { copy_positions(positions, static_cast<std::uint32_t>(N_points), exec); }
 			build_id_ = std::make_shared<QueryContext::BuildId>();
-			if (point_access_ == PointAccess::ref) { positions_ = { x, y, z }; }
+			if (point_access_ == PointAccess::ref) { reference_positions(positions); }
 		}
+
+		// keeps the input positions for queries in 'ref' mode
+		void reference_positions(const detail::Positions_SoA& positions) { soa_positions_ = positions; }
+		void reference_positions(const detail::Positions_AoS& positions) { aos_positions_ = positions; }
+
+	public:
 
 		// TODO: XML documentation?
 		void query(std::array<float, 3> query_pos, std::vector<std::uint32_t>& neighbors) const
@@ -142,10 +169,32 @@ namespace cellmate
 			append_neighbors(query_pos, thread_context(), neighbors);
 		}
 
+		// SoA input positions: (x, y, z) as 3 separate float arrays
+		// (e.g. 3 std::vector<float>, 3 std::array<float, N>, 3 float[N] arrays, ...)
 		// TODO: XML documentation?
 		void query_batch(const float* x, const float* y, const float* z, std::size_t N_queries,
 			std::vector<std::uint32_t>& neighbors, std::vector<std::size_t>& offsets,
 			ComputeMode exec = ComputeMode::par, QueryOrder order = QueryOrder::morton) const
+		{
+			query_batch_positions(detail::Positions_SoA{ x, y, z }, N_queries, neighbors, offsets, exec, order);
+		}
+
+		// AoS input positions: (x, y, z) as 3 consecutive floats, with the points 'stride_bytes' apart
+		// (e.g. std::array<float, 3>, glm::vec3, Eigen::Vector3f, cv::Point3f, pcl::PointXYZ, ...)
+		// TODO: XML documentation?
+		void query_batch(const float* xyz, std::size_t N_queries, std::size_t stride_bytes,
+			std::vector<std::uint32_t>& neighbors, std::vector<std::size_t>& offsets,
+			ComputeMode exec = ComputeMode::par, QueryOrder order = QueryOrder::morton) const
+		{
+			query_batch_positions(detail::Positions_AoS{ xyz, stride_bytes }, N_queries, neighbors, offsets, exec, order);
+		}
+
+	private:
+
+		// TODO: XML documentation?
+		template<class Positions>
+		void query_batch_positions(const Positions& queries, std::size_t N_queries, std::vector<std::uint32_t>& neighbors,
+			std::vector<std::size_t>& offsets, ComputeMode exec, QueryOrder order) const
 		{
 			if (order != QueryOrder::morton && order != QueryOrder::input)
 			{
@@ -165,16 +214,16 @@ namespace cellmate
 				offsets.assign(1, 0);
 				return;
 			}
-			if (!x || !y || !z)
+			if (!queries.valid(N_queries))
 			{
-				throw std::invalid_argument("'cellmate::query_batch()' requires three coordinate arrays");
+				throw std::invalid_argument("'cellmate::query_batch()' requires non-null positions (and a valid 'stride_bytes' for AoS input)");
 			}
 
 			// validate query positions before starting parallel work
 			// TODO: disable in release builds for performance?
 			for (std::size_t i = 0; i < N_queries; i++)
 			{
-				if (!std::isfinite(x[i]) || !std::isfinite(y[i]) || !std::isfinite(z[i]))
+				if (!std::isfinite(queries.x(i)) || !std::isfinite(queries.y(i)) || !std::isfinite(queries.z(i)))
 				{
 					throw std::invalid_argument("'cellmate::query_batch()' query positions must be finite");
 				}
@@ -202,19 +251,17 @@ namespace cellmate
 			if (exec == ComputeMode::par && N_threads > 1 &&
 				N_queries <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
 			{
-				query_batch_par(x, y, z, static_cast<std::ptrdiff_t>(N_queries), scratch, neighbors, offsets, N_threads, order);
+				query_batch_par(queries, static_cast<std::ptrdiff_t>(N_queries), scratch, neighbors, offsets, N_threads, order);
 			}
 			else
 			{
-				query_batch_seq(x, y, z, N_queries, scratch, neighbors, offsets, order);
+				query_batch_seq(queries, static_cast<std::uint32_t>(N_queries), scratch, neighbors, offsets, order);
 			}
 #else
 			(void)exec;
-			query_batch_seq(x, y, z, N_queries, scratch, neighbors, offsets, order);
+			query_batch_seq(queries, static_cast<std::uint32_t>(N_queries), scratch, neighbors, offsets, order);
 #endif
 		}
-
-	private:
 
 		// bounding box in cell coordinates
 		struct CellBounds
@@ -289,7 +336,8 @@ namespace cellmate
 		float radius_squ_;
 		double cell_width_inv_; // slightly wider than the radius to absorb rounding
 		PointAccess point_access_;
-		std::array<const float*, 3> positions_{};
+		detail::Positions_SoA soa_positions_{}; // referenced SoA input positions, unused for AoS input
+		detail::Positions_AoS aos_positions_{}; // referenced AoS input positions, unused for SoA input
 		std::array<std::vector<float>, 3> copied_ordered_positions_;
 		std::vector<std::uint32_t> ordered_indices_;
 		std::array<float, 3> origin_{};
@@ -369,12 +417,32 @@ namespace cellmate
 		void find_neighbors_from_ranges(std::array<float, 3> query_pos, const QueryContext& context,
 			std::vector<std::uint32_t>& neighbors) const
 		{
+			// scalar distance checks for referenced AoS positions
+			// (reads each candidate's coordinates from its point)
+			if (!copied && aos_positions_.xyz_)
+			{
+				const detail::DistQuery dist_query(query_pos, radius_squ_);
+				for (const QueryContext::PointRange& range : context.point_ranges_)
+				{
+					for (std::uint32_t i = range.begin; i < range.end; i++)
+					{
+						const std::uint32_t idx = ordered_indices_[i];
+						const float* point = aos_positions_.point(idx);
+						if (dist_query.contains(point[0], point[1], point[2]))
+						{
+							neighbors.push_back(idx);
+						}
+					}
+				}
+				return;
+			}
+
 			// select candidate coordinates
 			const std::array<const float*, 3> positions = copied
 				? std::array<const float*, 3>{ copied_ordered_positions_[0].data(),
 											   copied_ordered_positions_[1].data(),
 											   copied_ordered_positions_[2].data() }
-				: positions_;
+				: std::array<const float*, 3>{ soa_positions_.x_, soa_positions_.y_, soa_positions_.z_ };
 
 			const detail::DistQuery dist_query(query_pos, radius_squ_);
 			// allow a full-width store when a candidate SIMD batch crosses the flush threshold
@@ -647,7 +715,7 @@ namespace cellmate
 					}
 				}
 			}
-			else // 'PointAccess::ref'
+			else if (!aos_positions_.xyz_) // 'PointAccess::ref' with SoA input
 			{
 				// filter candidates against the box while gathering them through the point order
 				// (rejected candidates are overwritten by the next one)
@@ -657,7 +725,26 @@ namespace cellmate
 					for (std::size_t i = range.begin; i < range.end; i++)
 					{
 						const std::uint32_t idx = ordered_indices_[i];
-						const float px = positions_[0][idx], py = positions_[1][idx], pz = positions_[2][idx];
+						const float px = soa_positions_.x(idx), py = soa_positions_.y(idx), pz = soa_positions_.z(idx);
+						staged[0][N_staged] = px;
+						staged[1][N_staged] = py;
+						staged[2][N_staged] = pz;
+						staged_indices[N_staged] = idx;
+						N_staged += scalar_box.contains(px, py, pz);
+					}
+				}
+			}
+			else // 'PointAccess::ref' with AoS input
+			{
+				// same filtering as for SoA input, but reading each candidate's coordinates from its point
+				const detail::DistBoxScalar scalar_box(first, last, radius_squ_);
+				for (const QueryContext::PointRange& range : context.point_ranges_)
+				{
+					for (std::size_t i = range.begin; i < range.end; i++)
+					{
+						const std::uint32_t idx = ordered_indices_[i];
+						const float* point = aos_positions_.point(idx);
+						const float px = point[0], py = point[1], pz = point[2];
 						staged[0][N_staged] = px;
 						staged[1][N_staged] = py;
 						staged[2][N_staged] = pz;
@@ -728,7 +815,8 @@ namespace cellmate
 		// finds groups of queries in the range that share the same candidate cell bounds and processes
 		// them either with shared staged candidates or individually, decision based on group size
 		// (appends neighbor lists to 'buffer', storing each count in 'offsets' at its original query index)
-		void query_batch_morton_range(const float* x, const float* y, const float* z,
+		template<class Positions>
+		void query_batch_morton_range(const Positions& queries,
 			const std::vector<PointEntry>& query_order, std::size_t begin, std::size_t end,
 			QueryContext& context, std::vector<std::uint32_t>& buffer, std::vector<std::size_t>& offsets) const
 		{
@@ -738,7 +826,7 @@ namespace cellmate
 				// get candidate cell bounds for current query
 				const PointEntry& entry = query_order[i];
 				CellBounds bounds;
-				if (!query_cell_bounds({ x[entry.idx], y[entry.idx], z[entry.idx] }, bounds))
+				if (!query_cell_bounds(queries.pos(entry.idx), bounds))
 				{
 					offsets[entry.idx] = 0;
 					i++;
@@ -766,17 +854,17 @@ namespace cellmate
 				if (use_candidate_staging) // large group
 				{
 					// stage candidates within the radius of the group's bounding box
-					std::array<float, 3> first{ x[entry.idx], y[entry.idx], z[entry.idx] };
+					std::array<float, 3> first = queries.pos(entry.idx);
 					std::array<float, 3> last = first;
 					for (std::size_t k = i + 1; k < group_end; k++)
 					{
-						const std::uint32_t idx = query_order[k].idx;
-						first = { (std::min)(first[0], x[idx]),
-								  (std::min)(first[1], y[idx]),
-								  (std::min)(first[2], z[idx]) };
-						last = { (std::max)(last[0], x[idx]),
-								 (std::max)(last[1], y[idx]),
-								 (std::max)(last[2], z[idx]) };
+						const std::array<float, 3> query_pos = queries.pos(query_order[k].idx);
+						first = { (std::min)(first[0], query_pos[0]),
+								  (std::min)(first[1], query_pos[1]),
+								  (std::min)(first[2], query_pos[2]) };
+						last = { (std::max)(last[0], query_pos[0]),
+								 (std::max)(last[1], query_pos[1]),
+								 (std::max)(last[2], query_pos[2]) };
 					}
 					stage_query_group_candidates(first, last, context);
 
@@ -784,7 +872,7 @@ namespace cellmate
 					{
 						const std::uint32_t idx = query_order[k].idx;
 						const std::size_t start = buffer.size();
-						find_neighbors_from_staged({ x[idx], y[idx], z[idx] }, context, buffer);
+						find_neighbors_from_staged(queries.pos(idx), context, buffer);
 						offsets[idx] = buffer.size() - start;
 					}
 				}
@@ -796,11 +884,11 @@ namespace cellmate
 						const std::size_t start = buffer.size();
 						if (point_access_ == PointAccess::cpy)
 						{
-							find_neighbors_from_ranges<true>({ x[idx], y[idx], z[idx] }, context, buffer);
+							find_neighbors_from_ranges<true>(queries.pos(idx), context, buffer);
 						}
 						else
 						{
-							find_neighbors_from_ranges<false>({ x[idx], y[idx], z[idx] }, context, buffer);
+							find_neighbors_from_ranges<false>(queries.pos(idx), context, buffer);
 						}
 						offsets[idx] = buffer.size() - start;
 					}
@@ -828,11 +916,9 @@ namespace cellmate
 		}
 
 		// TODO: rework to avoid temporary neighbor buffer duplication (huge memory peak)?
-		void query_batch_seq(const float* x, const float* y, const float* z, std::uint32_t N_queries,
-			BatchScratch& scratch,
-			std::vector<std::uint32_t>& neighbors,
-			std::vector<std::size_t>& offsets,
-			QueryOrder order) const
+		template<class Positions>
+		void query_batch_seq(const Positions& queries, std::uint32_t N_queries, BatchScratch& scratch,
+			std::vector<std::uint32_t>& neighbors, std::vector<std::size_t>& offsets, QueryOrder order) const
 		{
 			if (order == QueryOrder::input)
 			{
@@ -842,7 +928,7 @@ namespace cellmate
 				QueryContext& context = thread_context();
 				for (std::uint32_t i = 0; i < N_queries; i++)
 				{
-					append_neighbors({ x[i], y[i], z[i] }, context, neighbors);
+					append_neighbors(queries.pos(i), context, neighbors);
 					offsets[i + 1] = neighbors.size();
 				}
 				return;
@@ -852,7 +938,7 @@ namespace cellmate
 			std::vector<PointEntry>& query_order = scratch.query_order_;
 			for (std::uint32_t i = 0; i < N_queries; i++)
 			{
-				query_order[i] = { query_morton_key({ x[i], y[i], z[i] }), i };
+				query_order[i] = { query_morton_key(queries.pos(i)), i };
 			}
 
 			// sort query indices by Morton key
@@ -864,7 +950,7 @@ namespace cellmate
 			buffer.clear();
 			QueryContext& context = thread_context();
 
-			query_batch_morton_range(x, y, z, query_order, 0, N_queries, context, buffer, offsets);
+			query_batch_morton_range(queries, query_order, 0, N_queries, context, buffer, offsets);
 
 			// convert counts into output positions in the caller's original query order
 			// (their sum is already bounded by the size of the single neighbor buffer)
@@ -884,12 +970,9 @@ namespace cellmate
 
 #ifdef _OPENMP
 		// TODO: rework to avoid temporary neighbor buffer duplication (huge memory peak)?
-		void query_batch_par(const float* x, const float* y, const float* z, std::ptrdiff_t N_queries,
-			BatchScratch& scratch,
-			std::vector<std::uint32_t>& neighbors,
-			std::vector<std::size_t>& offsets,
-			int N_threads,
-			QueryOrder order) const
+		template<class Positions>
+		void query_batch_par(const Positions& queries, std::ptrdiff_t N_queries, BatchScratch& scratch,
+			std::vector<std::uint32_t>& neighbors, std::vector<std::size_t>& offsets, int N_threads, QueryOrder order) const
 		{
 			std::vector<PointEntry>& query_order = scratch.query_order_;
 			if (order == QueryOrder::morton)
@@ -898,7 +981,7 @@ namespace cellmate
 				#pragma omp parallel for schedule(static) num_threads(N_threads)
 				for (std::ptrdiff_t i = 0; i < N_queries; i++)
 				{
-					query_order[i] = { query_morton_key({ x[i], y[i], z[i] }), static_cast<std::uint32_t>(i) };
+					query_order[i] = { query_morton_key(queries.pos(static_cast<std::size_t>(i))), static_cast<std::uint32_t>(i) };
 				}
 
 				// sort query indices by Morton key
@@ -944,7 +1027,7 @@ namespace cellmate
 					buffer.clear();
 					if (order == QueryOrder::morton)
 					{
-						query_batch_morton_range(x, y, z, query_order, static_cast<std::size_t>(begin),
+						query_batch_morton_range(queries, query_order, static_cast<std::size_t>(begin),
 							static_cast<std::size_t>(end), context, buffer, offsets);
 					}
 					else
@@ -953,7 +1036,7 @@ namespace cellmate
 						{
 							const std::size_t idx = static_cast<std::size_t>(i);
 							const std::size_t start = buffer.size();
-							append_neighbors({ x[idx], y[idx], z[idx] }, context, buffer);
+							append_neighbors(queries.pos(idx), context, buffer);
 							offsets[idx] = buffer.size() - start;
 						}
 					}
@@ -1007,7 +1090,8 @@ namespace cellmate
 #endif
 
 		// copy positions into cell order, matching the ordered original indices
-		void copy_positions(const float* x, const float* y, const float* z, std::uint32_t N_points, ComputeMode exec)
+		template<class Positions>
+		void copy_positions(const Positions& positions, std::uint32_t N_points, ComputeMode exec)
 		{
 			copied_ordered_positions_[0].resize(N_points);
 			copied_ordered_positions_[1].resize(N_points);
@@ -1021,9 +1105,9 @@ namespace cellmate
 				for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_points); i++)
 				{
 					const std::uint32_t idx = ordered_indices_[i];
-					copied_ordered_positions_[0][i] = x[idx];
-					copied_ordered_positions_[1][i] = y[idx];
-					copied_ordered_positions_[2][i] = z[idx];
+					copied_ordered_positions_[0][i] = positions.x(idx);
+					copied_ordered_positions_[1][i] = positions.y(idx);
+					copied_ordered_positions_[2][i] = positions.z(idx);
 				}
 				return;
 			}
@@ -1033,30 +1117,31 @@ namespace cellmate
 			for (std::uint32_t i = 0; i < N_points; i++)
 			{
 				const std::uint32_t idx = ordered_indices_[i];
-				copied_ordered_positions_[0][i] = x[idx];
-				copied_ordered_positions_[1][i] = y[idx];
-				copied_ordered_positions_[2][i] = z[idx];
+				copied_ordered_positions_[0][i] = positions.x(idx);
+				copied_ordered_positions_[1][i] = positions.y(idx);
+				copied_ordered_positions_[2][i] = positions.z(idx);
 			}
 		}
 
-		void rebuild_seq(const float* x, const float* y, const float* z, std::uint32_t N_points)
+		template<class Positions>
+		void rebuild_seq(const Positions& positions, std::uint32_t N_points)
 		{
 			// compute minimum and maximum (x,y,z)
-			std::array<float, 3> minimum{ x[0], y[0], z[0] };
+			std::array<float, 3> minimum{ positions.x(0), positions.y(0), positions.z(0) };
 			std::array<float, 3> maximum = minimum;
 			for (std::uint32_t i = 0; i < N_points; i++)
 			{
-				if (!std::isfinite(x[i]) || !std::isfinite(y[i]) || !std::isfinite(z[i]))
+				if (!std::isfinite(positions.x(i)) || !std::isfinite(positions.y(i)) || !std::isfinite(positions.z(i)))
 				{
 					throw std::invalid_argument("'cellmate::rebuild()' coordinates must be finite");
 				}
 
-				minimum[0] = (std::min)(minimum[0], x[i]);
-				minimum[1] = (std::min)(minimum[1], y[i]);
-				minimum[2] = (std::min)(minimum[2], z[i]);
-				maximum[0] = (std::max)(maximum[0], x[i]);
-				maximum[1] = (std::max)(maximum[1], y[i]);
-				maximum[2] = (std::max)(maximum[2], z[i]);
+				minimum[0] = (std::min)(minimum[0], positions.x(i));
+				minimum[1] = (std::min)(minimum[1], positions.y(i));
+				minimum[2] = (std::min)(minimum[2], positions.z(i));
+				maximum[0] = (std::max)(maximum[0], positions.x(i));
+				maximum[1] = (std::max)(maximum[1], positions.y(i));
+				maximum[2] = (std::max)(maximum[2], positions.z(i));
 			}
 
 			// set grid origin at the minimum (x,y,z) to avoid negative Morton keys and validate grid extent
@@ -1067,9 +1152,9 @@ namespace cellmate
 			point_order_.resize(N_points); // TODO: find alternative that grows with extra margin to avoid repeated allocations?
 			for (std::uint32_t i = 0; i < N_points; i++)
 			{
-				const std::uint32_t cx = cell_coord(x[i], 0);
-				const std::uint32_t cy = cell_coord(y[i], 1);
-				const std::uint32_t cz = cell_coord(z[i], 2);
+				const std::uint32_t cx = cell_coord(positions.x(i), 0);
+				const std::uint32_t cy = cell_coord(positions.y(i), 1);
+				const std::uint32_t cz = cell_coord(positions.z(i), 2);
 				point_order_[i] = { morton_key(cx, cy, cz), i };
 			}
 
@@ -1110,34 +1195,36 @@ namespace cellmate
 #endif
 
 #ifdef _OPENMP
-		void rebuild_par(const float* x, const float* y, const float* z, std::uint32_t N_points, int N_threads)
+		template<class Positions>
+		void rebuild_par(const Positions& positions, std::uint32_t N_points, int N_threads)
 		{
 			// compute minimum and maximum (x,y,z)
 			// (compute local bounds per thread, then merge into grid bounds)
-			std::array<float, 3> minimum{ x[0], y[0], z[0] };
+			std::array<float, 3> minimum{ positions.x(0), positions.y(0), positions.z(0) };
 			std::array<float, 3> maximum = minimum;
 			bool invalid = false;
 			#pragma omp parallel num_threads(N_threads)
 			{
-				std::array<float, 3> local_min{ x[0], y[0], z[0] };
+				std::array<float, 3> local_min{ positions.x(0), positions.y(0), positions.z(0) };
 				std::array<float, 3> local_max = local_min;
 				bool local_invalid = false;
 
 				#pragma omp for schedule(static)
 				for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_points); i++)
 				{
-					if (!std::isfinite(x[i]) || !std::isfinite(y[i]) || !std::isfinite(z[i]))
+					const std::size_t idx = static_cast<std::size_t>(i);
+					if (!std::isfinite(positions.x(idx)) || !std::isfinite(positions.y(idx)) || !std::isfinite(positions.z(idx)))
 					{
 						local_invalid = true;
 						continue;
 					}
 
-					local_min[0] = (std::min)(local_min[0], x[i]);
-					local_min[1] = (std::min)(local_min[1], y[i]);
-					local_min[2] = (std::min)(local_min[2], z[i]);
-					local_max[0] = (std::max)(local_max[0], x[i]);
-					local_max[1] = (std::max)(local_max[1], y[i]);
-					local_max[2] = (std::max)(local_max[2], z[i]);
+					local_min[0] = (std::min)(local_min[0], positions.x(idx));
+					local_min[1] = (std::min)(local_min[1], positions.y(idx));
+					local_min[2] = (std::min)(local_min[2], positions.z(idx));
+					local_max[0] = (std::max)(local_max[0], positions.x(idx));
+					local_max[1] = (std::max)(local_max[1], positions.y(idx));
+					local_max[2] = (std::max)(local_max[2], positions.z(idx));
 				}
 
 				#pragma omp critical(cellmate_rebuild_bounds)
@@ -1166,9 +1253,10 @@ namespace cellmate
 			#pragma omp parallel for schedule(static) num_threads(N_threads)
 			for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_points); i++)
 			{
-				const std::uint32_t cx = cell_coord(x[i], 0);
-				const std::uint32_t cy = cell_coord(y[i], 1);
-				const std::uint32_t cz = cell_coord(z[i], 2);
+				const std::size_t idx = static_cast<std::size_t>(i);
+				const std::uint32_t cx = cell_coord(positions.x(idx), 0);
+				const std::uint32_t cy = cell_coord(positions.y(idx), 1);
+				const std::uint32_t cz = cell_coord(positions.z(idx), 2);
 				point_order_[i] = { morton_key(cx, cy, cz), static_cast<std::uint32_t>(i) };
 			}
 
