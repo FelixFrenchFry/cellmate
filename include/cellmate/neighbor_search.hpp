@@ -241,7 +241,7 @@ namespace cellmate
 			// retain scratch capacity across calls to avoid repeated allocations
 			// (belongs to the caller, including buffers used by its parallel threads)
 			// TODO: perform explicit scratch release after unusually large batches?
-			static thread_local BatchScratch scratch;
+			BatchScratch& scratch = batch_scratch();
 			if (order == QueryOrder::morton) { scratch.query_order_.resize(N_queries); }
 
 #ifdef _OPENMP
@@ -331,6 +331,13 @@ namespace cellmate
 			std::vector<std::array<std::size_t, 256>> radix_offsets_; // per-chunk byte counts and offsets for parallel radix sort
 			std::vector<std::vector<std::uint32_t>> chunk_neighbors_; // neighbors collected per chunk before restoring query row order
 		};
+
+		// share scratch between SoA and AoS batches on the calling thread
+		static BatchScratch& batch_scratch()
+		{
+			static thread_local BatchScratch scratch;
+			return scratch;
+		}
 
 		float radius_;
 		float radius_squ_;
@@ -427,7 +434,7 @@ namespace cellmate
 					for (std::uint32_t i = range.begin; i < range.end; i++)
 					{
 						const std::uint32_t idx = ordered_indices_[i];
-						const float* point = aos_positions_.point(idx);
+						const std::array<float, 3> point = aos_positions_.pos(idx);
 						if (dist_query.contains(point[0], point[1], point[2]))
 						{
 							neighbors.push_back(idx);
@@ -743,7 +750,7 @@ namespace cellmate
 					for (std::size_t i = range.begin; i < range.end; i++)
 					{
 						const std::uint32_t idx = ordered_indices_[i];
-						const float* point = aos_positions_.point(idx);
+						const std::array<float, 3> point = aos_positions_.pos(idx);
 						const float px = point[0], py = point[1], pz = point[2];
 						staged[0][N_staged] = px;
 						staged[1][N_staged] = py;

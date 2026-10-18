@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <limits>
 
 #include "fp_control.hpp"
@@ -43,9 +44,18 @@ namespace cellmate
 			const float* xyz_ = nullptr;
 			std::size_t stride_bytes_ = 3 * sizeof(float);
 
-			const float* point(std::size_t idx) const noexcept
+			// first byte of the point, with (x, y, z) coordinates copied out via 'memcpy'
+			// (avoids undefined behavior from indexing a cast 'float*', compiles to regular loads in optimized builds)
+			const unsigned char* point(std::size_t idx) const noexcept
 			{
-				return reinterpret_cast<const float*>(reinterpret_cast<const unsigned char*>(xyz_) + idx * stride_bytes_);
+				return reinterpret_cast<const unsigned char*>(xyz_) + idx * stride_bytes_;
+			}
+
+			float coord(std::size_t idx, std::size_t axis) const noexcept
+			{
+				float value;
+				std::memcpy(&value, point(idx) + axis * sizeof(float), sizeof(float));
+				return value;
 			}
 
 			bool valid(std::size_t N_points) const noexcept
@@ -54,18 +64,19 @@ namespace cellmate
 					xyz_ && // not null
 					stride_bytes_ >= 3 * sizeof(float) && // points do not overlap
 					stride_bytes_ % alignof(float) == 0 && // every point's x is float-aligned
-					(N_points == 0 || N_points - 1 <= (std::numeric_limits<std::size_t>::max)() / stride_bytes_); // last point's offset fits in 'size_t'
+					(N_points == 0 || N_points - 1 <= ((std::numeric_limits<std::size_t>::max)() - 3 * sizeof(float)) / stride_bytes_); // last point fits in 'size_t'
 			}
 
 			std::array<float, 3> pos(std::size_t idx) const noexcept
 			{
-				const float* p = point(idx);
+				float p[3];
+				std::memcpy(p, point(idx), sizeof(p));
 				return { p[0], p[1], p[2] };
 			}
 
-			float x(std::size_t idx) const noexcept { return point(idx)[0]; }
-			float y(std::size_t idx) const noexcept { return point(idx)[1]; }
-			float z(std::size_t idx) const noexcept { return point(idx)[2]; }
+			float x(std::size_t idx) const noexcept { return coord(idx, 0); }
+			float y(std::size_t idx) const noexcept { return coord(idx, 1); }
+			float z(std::size_t idx) const noexcept { return coord(idx, 2); }
 		};
 	}
 }
