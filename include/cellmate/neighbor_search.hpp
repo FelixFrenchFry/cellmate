@@ -142,8 +142,6 @@ namespace cellmate
 			rebuild_seq(positions, static_cast<std::uint32_t>(N_points));
 #endif
 
-			build_cell_prefix_directory();
-
 			if (point_access_ == PointAccess::cpy) { copy_positions(positions, static_cast<std::uint32_t>(N_points), exec); }
 			build_id_ = std::make_shared<QueryContext::BuildId>();
 			if (point_access_ == PointAccess::ref) { reference_positions(positions); }
@@ -1212,6 +1210,7 @@ namespace cellmate
 			sort_point_order_seq(point_order_, point_order_scratch_,
 				morton_key(last_cell_[0], last_cell_[1], last_cell_[2]));
 			build_cell_table_seq(N_points);
+			build_cell_prefix_directory_seq();
 		}
 
 #ifdef _OPENMP
@@ -1322,6 +1321,7 @@ namespace cellmate
 					morton_key(last_cell_[0], last_cell_[1], last_cell_[2]));
 			}
 			build_cell_table_par(N_points, N_threads);
+			build_cell_prefix_directory_par(N_threads);
 		}
 #endif
 
@@ -1577,7 +1577,8 @@ namespace cellmate
 			cell_starts_.push_back(N_points); // end of the last cell
 		}
 
-		void build_cell_prefix_directory()
+		// fill cell prefix directory with the first cell of each prefix, sequential version
+		void build_cell_prefix_directory_seq()
 		{
 			const std::size_t N_cells = cell_keys_.size();
 			if (N_cells < 2048) { return; }
@@ -1603,7 +1604,6 @@ namespace cellmate
 			}
 
 			// store index of the first cell for each prefix
-			// TODO: implement parallelized version of this?
 			std::size_t cell = 0;
 			for (std::size_t prefix = 0; prefix < N_prefixes; prefix++)
 			{
@@ -1617,6 +1617,61 @@ namespace cellmate
 			cell_prefix_[N_prefixes] = cell_keys_.size();
 			cell_prefix_shift_ = shift;
 		}
+
+#ifdef _OPENMP
+		// fill cell prefix directory with the first cell of each prefix, parallel version
+		void build_cell_prefix_directory_par(int N_threads)
+		{
+			const std::size_t N_cells = cell_keys_.size();
+			if (N_cells < 2048) { return; }
+
+			// choose directory size based on occupied cell count heuristics
+			constexpr std::size_t N_prefixes_min = 512;
+			constexpr std::size_t N_prefixes_max = 131072;
+			constexpr std::size_t N_prefix_growth = 2;
+			constexpr std::size_t N_cells_per_prefix = 4;
+
+			const std::size_t N_prefixes_target = N_cells / N_cells_per_prefix + (N_cells % N_cells_per_prefix != 0);
+			std::size_t N_prefixes = N_prefixes_min;
+			while (N_prefixes < N_prefixes_max && N_prefixes < N_prefixes_target)
+			{
+				N_prefixes = (std::min)(N_prefixes * N_prefix_growth, N_prefixes_max);
+			}
+			cell_prefix_.resize(N_prefixes + 1);
+
+			std::uint32_t shift = 0;
+			for (std::uint64_t remaining = cell_keys_.back() / N_prefixes; remaining != 0; remaining >>= 1)
+			{
+				shift++;
+			}
+
+			// divide prefixes into chunks, each starting at the first cell of its first prefix
+			const std::size_t chunk_size = select_chunk_size(N_prefixes, N_threads);
+			const std::ptrdiff_t N_chunks = static_cast<std::ptrdiff_t>(
+				N_prefixes / chunk_size + (N_prefixes % chunk_size != 0));
+
+			// store index of the first cell for each prefix
+			#pragma omp parallel for schedule(static) num_threads(N_threads)
+			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
+			{
+				const std::size_t begin = static_cast<std::size_t>(chunk) * chunk_size;
+				const std::size_t end = begin + (std::min)(chunk_size, N_prefixes - begin);
+				std::size_t cell = static_cast<std::size_t>(std::lower_bound(cell_keys_.begin(), cell_keys_.end(),
+					static_cast<std::uint64_t>(begin) << shift) - cell_keys_.begin());
+				for (std::size_t prefix = begin; prefix < end; prefix++)
+				{
+					const std::uint64_t threshold = static_cast<std::uint64_t>(prefix) << shift;
+					while (cell < N_cells && cell_keys_[cell] < threshold)
+					{
+						cell++;
+					}
+					cell_prefix_[prefix] = cell;
+				}
+			}
+			cell_prefix_[N_prefixes] = cell_keys_.size();
+			cell_prefix_shift_ = shift;
+		}
+#endif
 
 		// reuse the cached result if its key matches, otherwise search and replace it
 		std::size_t find_cell(std::uint64_t key, QueryContext& context) const
