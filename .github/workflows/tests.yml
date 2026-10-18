@@ -19,10 +19,19 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      # total of 12 combinations (3 compilers x 2 backends x 2 OpenMP settings)
+      # total of 24 combinations (6 toolchains x 2 backends x 2 OpenMP settings)
       matrix:
         toolchain:
-          # GCC 15 on Linux
+          # GCC 13 on Ubuntu 24.04
+          - name: GCC 13
+            os: ubuntu-24.04
+            generator: Ninja
+            configure_args: -DCMAKE_CXX_COMPILER=g++-13
+            compiler_id: GNU
+            compiler_version: '13'
+            avx256_flags: -mavx2
+            executable: build/tests/cellmate_tests
+          # GCC 15 on Ubuntu 26.04
           - name: GCC 15
             os: ubuntu-26.04
             generator: Ninja
@@ -31,7 +40,16 @@ jobs:
             compiler_version: '15'
             avx256_flags: -mavx2
             executable: build/tests/cellmate_tests
-          # Clang 21 on Linux
+          # Clang 18 on Ubuntu 24.04
+          - name: Clang 18
+            os: ubuntu-24.04
+            generator: Ninja
+            configure_args: -DCMAKE_CXX_COMPILER=clang++-18
+            compiler_id: Clang
+            compiler_version: '18'
+            avx256_flags: -mavx2
+            executable: build/tests/cellmate_tests
+          # Clang 21 on Ubuntu 26.04
           - name: Clang 21
             os: ubuntu-26.04
             generator: Ninja
@@ -40,13 +58,22 @@ jobs:
             compiler_version: '21'
             avx256_flags: -mavx2
             executable: build/tests/cellmate_tests
-          # MSVC 19.44 (VS 2022) on Windows
+          # MSVC 19.44 (VS 2022) on Windows Server 2022
           - name: MSVC 19.44 (VS 2022)
             os: windows-2022
             generator: Visual Studio 17 2022
             configure_args: -A x64 -T "v143,version=14.44"
             compiler_id: MSVC
             compiler_version: '19.44'
+            avx256_flags: /arch:AVX2
+            executable: build/tests/Release/cellmate_tests.exe
+          # MSVC 19.5x (VS 2026) on Windows Server 2025
+          - name: MSVC 19.5x (VS 2026)
+            os: windows-2025
+            generator: Visual Studio 18 2026
+            configure_args: -A x64 -T v145
+            compiler_id: MSVC
+            compiler_version: '19'
             avx256_flags: /arch:AVX2
             executable: build/tests/Release/cellmate_tests.exe
         simd: [SCALAR, AVX256]
@@ -62,10 +89,10 @@ jobs:
           persist-credentials: false
 
       - name: Install Clang OpenMP runtime
-        if: matrix.toolchain.name == 'Clang 21' && matrix.openmp == 'ON'
+        if: matrix.toolchain.compiler_id == 'Clang' && matrix.openmp == 'ON'
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libomp-21-dev
+          sudo apt-get install --no-install-recommends -y libomp-${{ matrix.toolchain.compiler_version }}-dev
 
       # include benchmark configuration tests, but performance benchmarks are not run
       - name: Configure tests
@@ -88,3 +115,51 @@ jobs:
 
       - name: Run tests
         run: ./${{ matrix.toolchain.executable }}
+
+  # run the same suite with memory (ASan) and undefined-behavior (UBSan) checks
+  sanitizers:
+    name: Clang 21 / ${{ matrix.simd }} / OpenMP OFF / ASan + UBSan
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      # total of 2 combinations (2 backends)
+      matrix:
+        simd: [SCALAR, AVX256]
+    env:
+      ASAN_OPTIONS: 'detect_leaks=1:halt_on_error=1'
+      ASAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer-21
+      UBSAN_OPTIONS: 'print_stacktrace=1:halt_on_error=1:external_symbolizer_path=/usr/bin/llvm-symbolizer-21'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install sanitizer runtime and symbolizer
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libclang-rt-21-dev llvm-21
+
+      - name: Configure tests
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_CXX_COMPILER=clang++-21
+          "-DCMAKE_PROJECT_cellmate_INCLUDE=${{ github.workspace }}/.github/check_compiler.cmake"
+          -DCELLMATE_CI_COMPILER_ID=Clang
+          -DCELLMATE_CI_COMPILER_VERSION=21
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCELLMATE_BUILD_TESTS=ON
+          -DCELLMATE_BUILD_BENCHMARKS=ON
+          -DCELLMATE_BUILD_EXAMPLES=OFF
+          -DCELLMATE_SIMD=${{ matrix.simd }}
+          -DCELLMATE_ENABLE_OPENMP=OFF
+          "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+          "-DCELLMATE_TEST_ARCH_FLAGS=${{ matrix.simd == 'AVX256' && '-mavx2' || '' }}"
+
+      - name: Build tests
+        run: cmake --build build --config RelWithDebInfo --target cellmate_tests --parallel 2
+
+      - name: Run tests
+        run: ./build/tests/cellmate_tests
