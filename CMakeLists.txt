@@ -25,11 +25,6 @@ if(CELLMATE_BUILD_BENCHMARKS)
 	add_subdirectory(benchmarks)
 endif()
 
-option(CELLMATE_BUILD_EXAMPLES "Build the cellmate usage examples" OFF)
-if(CELLMATE_BUILD_EXAMPLES)
-	add_subdirectory(examples)
-endif()
-
 option(CELLMATE_BUILD_TESTS "Build the cellmate correctness tests" OFF)
 if(CELLMATE_BUILD_TESTS)
 	add_subdirectory(tests)

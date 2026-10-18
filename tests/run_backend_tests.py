@@ -30,7 +30,7 @@ def main():
             run(
                 "cmake", "-S", str(repository), "-B", str(build_directory), "-G", generator,
                 "-DCMAKE_BUILD_TYPE=Release", "-DCELLMATE_BUILD_TESTS=ON",
-                "-DCELLMATE_BUILD_BENCHMARKS=OFF", "-DCELLMATE_BUILD_EXAMPLES=OFF",
+                "-DCELLMATE_BUILD_BENCHMARKS=OFF",
                 "-DCELLMATE_ENABLE_OPENMP=OFF", f"-DCELLMATE_SIMD={backend}",
                 f"-DCELLMATE_TEST_ARCH_FLAGS={flags}",
             )

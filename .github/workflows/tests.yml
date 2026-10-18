@@ -110,7 +110,6 @@ jobs:
           -DCMAKE_CXX_EXTENSIONS=OFF
           -DCELLMATE_BUILD_TESTS=ON
           -DCELLMATE_BUILD_BENCHMARKS=ON
-          -DCELLMATE_BUILD_EXAMPLES=OFF
           -DCELLMATE_SIMD=${{ matrix.simd }}
           -DCELLMATE_ENABLE_OPENMP=${{ matrix.openmp }}
           "-DCELLMATE_TEST_ARCH_FLAGS=${{ matrix.simd == 'AVX256' && matrix.toolchain.avx256_flags || '' }}"
@@ -169,7 +168,6 @@ jobs:
           -DCMAKE_CXX_EXTENSIONS=OFF
           -DCELLMATE_BUILD_TESTS=ON
           -DCELLMATE_BUILD_BENCHMARKS=ON
-          -DCELLMATE_BUILD_EXAMPLES=OFF
           -DCELLMATE_SIMD=${{ matrix.simd }}
           -DCELLMATE_ENABLE_OPENMP=${{ matrix.openmp }}
           "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
@@ -241,7 +239,6 @@ jobs:
           -DCMAKE_CXX_EXTENSIONS=OFF
           -DCELLMATE_BUILD_TESTS=ON
           -DCELLMATE_BUILD_BENCHMARKS=ON
-          -DCELLMATE_BUILD_EXAMPLES=OFF
           -DCELLMATE_SIMD=AVX512
           -DCELLMATE_ENABLE_OPENMP=ON
           "-DCELLMATE_TEST_ARCH_FLAGS=${{ matrix.toolchain.avx512_flags }}"
@@ -316,7 +313,6 @@ jobs:
           -DCMAKE_CXX_EXTENSIONS=OFF
           -DCELLMATE_BUILD_TESTS=ON
           -DCELLMATE_BUILD_BENCHMARKS=ON
-          -DCELLMATE_BUILD_EXAMPLES=OFF
           -DCELLMATE_SIMD=AVX256
           -DCELLMATE_ENABLE_OPENMP=ON
           "-DCELLMATE_TEST_ARCH_FLAGS=${{ matrix.toolchain.avx256_flags }}"
