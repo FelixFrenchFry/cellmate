@@ -14,12 +14,13 @@ concurrency:
 
 jobs:
   tests:
-    name: ${{ matrix.toolchain.name }} / ${{ matrix.simd }} / OpenMP ${{ matrix.openmp }}
+    name: ${{ matrix.toolchain.name }} / ${{ matrix.build_type }} / ${{ matrix.simd }} / OpenMP ${{ matrix.openmp }}
     runs-on: ${{ matrix.toolchain.os }}
-    timeout-minutes: 20
+    # allow unoptimized Debug builds (with debug STL checks) more time
+    timeout-minutes: ${{ matrix.build_type == 'Debug' && 60 || 20 }}
     strategy:
       fail-fast: false
-      # total of 24 combinations (6 toolchains x 2 backends x 2 OpenMP settings)
+      # total of 48 combinations (6 toolchains x 2 build types x 2 backends x 2 OpenMP settings)
       matrix:
         toolchain:
           # GCC 13 on Ubuntu 24.04
@@ -66,7 +67,7 @@ jobs:
             compiler_id: MSVC
             compiler_version: '19.44'
             avx256_flags: /arch:AVX2
-            executable: build/tests/Release/cellmate_tests.exe
+            executable: 'build/tests/{0}/cellmate_tests.exe'
           # MSVC 19.5x (VS 2026) on Windows Server 2025
           - name: MSVC 19.5x (VS 2026)
             os: windows-2025
@@ -75,7 +76,8 @@ jobs:
             compiler_id: MSVC
             compiler_version: '19'
             avx256_flags: /arch:AVX2
-            executable: build/tests/Release/cellmate_tests.exe
+            executable: 'build/tests/{0}/cellmate_tests.exe'
+        build_type: [Release, Debug]
         simd: [SCALAR, AVX256]
         openmp: ['OFF', 'ON']
     # use 2 OpenMP threads without dynamic team-size adjustment
@@ -102,7 +104,7 @@ jobs:
           "-DCMAKE_PROJECT_cellmate_INCLUDE=${{ github.workspace }}/.github/check_compiler.cmake"
           -DCELLMATE_CI_COMPILER_ID=${{ matrix.toolchain.compiler_id }}
           -DCELLMATE_CI_COMPILER_VERSION=${{ matrix.toolchain.compiler_version }}
-          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCELLMATE_BUILD_TESTS=ON
           -DCELLMATE_BUILD_BENCHMARKS=ON
           -DCELLMATE_BUILD_EXAMPLES=OFF
@@ -111,10 +113,10 @@ jobs:
           "-DCELLMATE_TEST_ARCH_FLAGS=${{ matrix.simd == 'AVX256' && matrix.toolchain.avx256_flags || '' }}"
 
       - name: Build tests
-        run: cmake --build build --config Release --target cellmate_tests --parallel 2
+        run: cmake --build build --config ${{ matrix.build_type }} --target cellmate_tests --parallel 2
 
       - name: Run tests
-        run: ./${{ matrix.toolchain.executable }}
+        run: ./${{ format(matrix.toolchain.executable, matrix.build_type) }}
 
   # run the same suite with memory (ASan) and undefined-behavior (UBSan) checks
   sanitizers:
