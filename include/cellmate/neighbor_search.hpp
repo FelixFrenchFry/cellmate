@@ -1558,12 +1558,17 @@ namespace cellmate
 				shift++;
 			}
 
-			auto first = cell_keys_.begin();
+			// store index of the first cell for each prefix
+			// TODO: implement parallelized version of this?
+			std::size_t cell = 0;
 			for (std::size_t prefix = 0; prefix < N_prefixes; prefix++)
 			{
 				const std::uint64_t threshold = static_cast<std::uint64_t>(prefix) << shift;
-				first = std::lower_bound(first, cell_keys_.end(), threshold);
-				cell_prefix_[prefix] = static_cast<std::size_t>(first - cell_keys_.begin());
+				while (cell < N_cells && cell_keys_[cell] < threshold)
+				{
+					cell++;
+				}
+				cell_prefix_[prefix] = cell;
 			}
 			cell_prefix_[N_prefixes] = cell_keys_.size();
 			cell_prefix_shift_ = shift;
