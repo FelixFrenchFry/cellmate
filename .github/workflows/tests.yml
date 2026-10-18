@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   tests:
-    name: ${{ matrix.toolchain.name }} / ${{ matrix.build_type }} / ${{ matrix.simd }} / OpenMP ${{ matrix.openmp }}
+    name: ${{ matrix.toolchain.name }} / C++14 / ${{ matrix.build_type }} / ${{ matrix.simd }} / OpenMP ${{ matrix.openmp }}
     runs-on: ${{ matrix.toolchain.os }}
     # allow unoptimized Debug builds (with debug STL checks) more time
     timeout-minutes: ${{ matrix.build_type == 'Debug' && 60 || 20 }}
@@ -105,6 +105,9 @@ jobs:
           -DCELLMATE_CI_COMPILER_ID=${{ matrix.toolchain.compiler_id }}
           -DCELLMATE_CI_COMPILER_VERSION=${{ matrix.toolchain.compiler_version }}
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_CXX_STANDARD=14
+          -DCMAKE_CXX_STANDARD_REQUIRED=ON
+          -DCMAKE_CXX_EXTENSIONS=OFF
           -DCELLMATE_BUILD_TESTS=ON
           -DCELLMATE_BUILD_BENCHMARKS=ON
           -DCELLMATE_BUILD_EXAMPLES=OFF
@@ -120,7 +123,7 @@ jobs:
 
   # run with memory (ASan) and undefined-behavior (UBSan) checks
   sanitizers:
-    name: Clang 21 / ${{ matrix.simd }} / OpenMP ${{ matrix.openmp }} / ASan + UBSan
+    name: Clang 21 / C++14 / ${{ matrix.simd }} / OpenMP ${{ matrix.openmp }} / ASan + UBSan
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     strategy:
@@ -161,6 +164,9 @@ jobs:
           -DCELLMATE_CI_COMPILER_ID=Clang
           -DCELLMATE_CI_COMPILER_VERSION=21
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_STANDARD=14
+          -DCMAKE_CXX_STANDARD_REQUIRED=ON
+          -DCMAKE_CXX_EXTENSIONS=OFF
           -DCELLMATE_BUILD_TESTS=ON
           -DCELLMATE_BUILD_BENCHMARKS=ON
           -DCELLMATE_BUILD_EXAMPLES=OFF
@@ -178,7 +184,7 @@ jobs:
 
   # build with AVX512, but do not run them
   avx512_compile:
-    name: ${{ matrix.toolchain.name }} / Release / AVX512 / OpenMP ON / COMPILE ONLY
+    name: ${{ matrix.toolchain.name }} / C++14 / Release / AVX512 / OpenMP ON / COMPILE ONLY
     runs-on: ${{ matrix.toolchain.os }}
     timeout-minutes: 20
     strategy:
@@ -230,6 +236,9 @@ jobs:
           -DCELLMATE_CI_COMPILER_ID=${{ matrix.toolchain.compiler_id }}
           -DCELLMATE_CI_COMPILER_VERSION=${{ matrix.toolchain.compiler_version }}
           -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_STANDARD=14
+          -DCMAKE_CXX_STANDARD_REQUIRED=ON
+          -DCMAKE_CXX_EXTENSIONS=OFF
           -DCELLMATE_BUILD_TESTS=ON
           -DCELLMATE_BUILD_BENCHMARKS=ON
           -DCELLMATE_BUILD_EXAMPLES=OFF
@@ -240,7 +249,7 @@ jobs:
       - name: Compile and link tests (no execution)
         run: cmake --build build --config Release --target cellmate_tests --parallel 2
 
-  # run with C++17, C++20, C++23
+  # run with C++17, C++20, C++23 (C++14 is covered by all the other jobs using it as default)
   cpp_standards:
     name: ${{ matrix.toolchain.name }} / C++${{ matrix.cpp_standard }} / Release / AVX256 / OpenMP ON
     runs-on: ${{ matrix.toolchain.os }}

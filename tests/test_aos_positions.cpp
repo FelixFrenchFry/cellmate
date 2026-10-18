@@ -8,7 +8,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -71,7 +70,7 @@ TEST(NeighborSearchAosPositions, AosInputsMatchSoaInputs)
 			cellmate::NeighborSearch expected_search(1.0f, storage);
 			expected_search.rebuild(points.x.data(), points.y.data(), points.z.data(), N_points, execution);
 
-			for (std::size_t input = 0; input < std::size(inputs); input++)
+			for (std::size_t input = 0; input < sizeof(inputs) / sizeof(inputs[0]); input++)
 			{
 				SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
 					<< ", 'execution' = " << static_cast<int>(execution) << ", 'input' = " << input);
