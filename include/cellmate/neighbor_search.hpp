@@ -418,38 +418,52 @@ namespace cellmate
 			}
 		}
 
+		// referenced coordinate bases for SIMD gathers and the float stride between consecutive points
+		// (separate arrays for SoA input, the first point's coordinates for AoS input)
+		std::array<const float*, 3> referenced_coords(std::size_t& stride) const noexcept
+		{
+			if (aos_positions_.xyz_)
+			{
+				const unsigned char* first = aos_positions_.point(0);
+				stride = aos_positions_.stride_bytes_ / sizeof(float);
+				return { reinterpret_cast<const float*>(first),
+						 reinterpret_cast<const float*>(first + sizeof(float)),
+						 reinterpret_cast<const float*>(first + 2 * sizeof(float)) };
+			}
+			stride = 1;
+			return { soa_positions_.x_, soa_positions_.y_, soa_positions_.z_ };
+		}
+
+		// copies the coordinates of one referenced point, from SoA arrays or AoS bytes
+		std::array<float, 3> referenced_pos(std::size_t idx) const noexcept
+		{
+			return aos_positions_.xyz_ ? aos_positions_.pos(idx) : soa_positions_.pos(idx);
+		}
+
+		// whether SIMD gathers can address every referenced point with signed 32-bit offsets
+		bool gathers_fit(std::size_t stride) const noexcept
+		{
+			return ordered_indices_.size() - 1 <= static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)()) / stride;
+		}
+
 		// finds neighbors for one query using candidate ranges and SIMD distance checks
 		// (appends matching point IDs to 'neighbors', preserving existing entries)
 		template<bool copied>
 		void find_neighbors_from_ranges(std::array<float, 3> query_pos, const QueryContext& context,
 			std::vector<std::uint32_t>& neighbors) const
 		{
-			// scalar distance checks for referenced AoS positions
-			// (reads each candidate's coordinates from its point)
-			if (!copied && aos_positions_.xyz_)
-			{
-				const detail::DistQuery dist_query(query_pos, radius_squ_);
-				for (const QueryContext::PointRange& range : context.point_ranges_)
-				{
-					for (std::uint32_t i = range.begin; i < range.end; i++)
-					{
-						const std::uint32_t idx = ordered_indices_[i];
-						const std::array<float, 3> point = aos_positions_.pos(idx);
-						if (dist_query.contains(point[0], point[1], point[2]))
-						{
-							neighbors.push_back(idx);
-						}
-					}
-				}
-				return;
-			}
-
 			// select candidate coordinates
+			// (SIMD gathers read referenced AoS coordinates 'stride' floats apart, scalar checks copy them with 'referenced_pos()')
+			std::size_t stride = 1;
 			const std::array<const float*, 3> positions = copied
 				? std::array<const float*, 3>{ copied_ordered_positions_[0].data(),
 											   copied_ordered_positions_[1].data(),
 											   copied_ordered_positions_[2].data() }
-				: std::array<const float*, 3>{ soa_positions_.x_, soa_positions_.y_, soa_positions_.z_ };
+				: referenced_coords(stride);
+
+			// referenced positions use SIMD gathers when every point fits their offsets
+			// (checked once per query instead of per range)
+			const bool gather = !copied && detail::has_index_compaction && gathers_fit(stride);
 
 			const detail::DistQuery dist_query(query_pos, radius_squ_);
 			// allow a full-width store when a candidate SIMD batch crosses the flush threshold
@@ -459,7 +473,7 @@ namespace cellmate
 			// check candidates in each range using the same query and buffer
 			for (const QueryContext::PointRange& range : context.point_ranges_)
 			{
-				append_range_neighbors<copied>(range.begin, range.end, positions, dist_query, neighbors, buffer, N_buffered);
+				append_range_neighbors<copied>(range.begin, range.end, positions, stride, gather, dist_query, neighbors, buffer, N_buffered);
 			}
 
 			// flush remaining buffered IDs into the result list
@@ -580,18 +594,28 @@ namespace cellmate
 		// (filtering one point range, preserving output order of the original indices)
 		template<bool copied>
 		void append_range_neighbors(std::uint32_t begin, std::uint32_t end, const std::array<const float*, 3>& positions,
-			const detail::DistQuery& dist_query, std::vector<std::uint32_t>& neighbors,
+			std::size_t stride, bool gather, const detail::DistQuery& dist_query, std::vector<std::uint32_t>& neighbors,
 			std::uint32_t* buffer, std::size_t& N_buffered) const
 		{
-			constexpr bool use_buffer = copied && detail::has_index_compaction;
+			constexpr bool use_buffer = detail::has_index_compaction;
+			float gathered[3][detail::DistQuery::N_lanes];
 
 			std::size_t i = begin;
-			if (copied) // optional SIMD mask distance checks for contiguous positions
+			if (copied || gather) // optional SIMD mask distance checks for contiguous or gathered positions
 			{
 				// check candidate points in full SIMD batches
 				for (; end - i >= detail::DistQuery::N_lanes; i += detail::DistQuery::N_lanes)
 				{
-					unsigned mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i);
+					unsigned mask;
+					if (copied)
+					{
+						mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i);
+					}
+					else
+					{
+						detail::gather_coords(positions, ordered_indices_.data() + i, stride, detail::DistQuery::N_lanes, gathered);
+						mask = dist_query.neighbor_mask(gathered[0], gathered[1], gathered[2]);
+					}
 					if (use_buffer)
 					{
 						N_buffered += detail::pack_contiguous_indices(ordered_indices_.data() + i, mask, buffer + N_buffered);
@@ -615,7 +639,17 @@ namespace cellmate
 				// (masked lanes may read past the range end but never past the array end)
 				if (end > i && ordered_indices_.size() - i >= detail::DistQuery::N_lanes)
 				{
-					unsigned mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i) & ((1u << (end - i)) - 1u);
+					unsigned mask;
+					if (copied)
+					{
+						mask = dist_query.neighbor_mask(positions[0] + i, positions[1] + i, positions[2] + i);
+					}
+					else
+					{
+						detail::gather_coords(positions, ordered_indices_.data() + i, stride, end - i, gathered);
+						mask = dist_query.neighbor_mask(gathered[0], gathered[1], gathered[2]);
+					}
+					mask &= (1u << (end - i)) - 1u;
 					if (use_buffer)
 					{
 						N_buffered += detail::pack_contiguous_indices(ordered_indices_.data() + i, mask, buffer + N_buffered);
@@ -641,8 +675,10 @@ namespace cellmate
 			// (or for remainders too close to the array end for a full SIMD batch)
 			for (; i < end; i++)
 			{
-				const std::size_t idx = copied ? i : ordered_indices_[i];
-				if (dist_query.contains(positions[0][idx], positions[1][idx], positions[2][idx]))
+				const std::array<float, 3> candidate = copied
+					? std::array<float, 3>{ positions[0][i], positions[1][i], positions[2][i] }
+					: referenced_pos(ordered_indices_[i]);
+				if (dist_query.contains(candidate[0], candidate[1], candidate[2]))
 				{
 					if (use_buffer)
 					{
@@ -722,35 +758,43 @@ namespace cellmate
 					}
 				}
 			}
-			else if (!aos_positions_.xyz_) // 'PointAccess::ref' with SoA input
+			else // 'PointAccess::ref'
 			{
 				// filter candidates against the box while gathering them through the point order
-				// (rejected candidates are overwritten by the next one)
+				// (SIMD gathers read referenced AoS coordinates 'stride' floats apart, scalar loads copy them with 'referenced_pos()')
+				std::size_t stride = 1;
+				const std::array<const float*, 3> coords = referenced_coords(stride);
 				const detail::DistBoxScalar scalar_box(first, last, radius_squ_);
+				const detail::DistBox dist_box(first, last, radius_squ_);
+				const bool gather = detail::has_index_compaction && gathers_fit(stride);
+				float gathered[3][detail::DistQuery::N_lanes];
 				for (const QueryContext::PointRange& range : context.point_ranges_)
 				{
-					for (std::size_t i = range.begin; i < range.end; i++)
+					// gather and check candidates in full SIMD batches, masking the range's last batch
+					// (masked lanes may read past the range end, never past the array end)
+					std::size_t i = range.begin;
+					while (gather && i < range.end && ordered_indices_.size() - i >= N_lanes)
 					{
-						const std::uint32_t idx = ordered_indices_[i];
-						const float px = soa_positions_.x(idx), py = soa_positions_.y(idx), pz = soa_positions_.z(idx);
-						staged[0][N_staged] = px;
-						staged[1][N_staged] = py;
-						staged[2][N_staged] = pz;
-						staged_indices[N_staged] = idx;
-						N_staged += scalar_box.contains(px, py, pz);
+						const std::size_t N_valid = (std::min)(N_lanes, range.end - i);
+						detail::gather_coords(coords, ordered_indices_.data() + i, stride, N_valid, gathered);
+						unsigned mask = dist_box.neighbor_mask(gathered[0], gathered[1], gathered[2]);
+						if (range.end - i < N_lanes)
+						{
+							mask &= (1u << (range.end - i)) - 1u;
+						}
+						detail::pack_contiguous_floats(gathered[0], mask, staged[0] + N_staged);
+						detail::pack_contiguous_floats(gathered[1], mask, staged[1] + N_staged);
+						detail::pack_contiguous_floats(gathered[2], mask, staged[2] + N_staged);
+						N_staged += detail::pack_contiguous_indices(ordered_indices_.data() + i, mask, staged_indices + N_staged);
+						i += N_lanes;
 					}
-				}
-			}
-			else // 'PointAccess::ref' with AoS input
-			{
-				// same filtering as for SoA input, but reading each candidate's coordinates from its point
-				const detail::DistBoxScalar scalar_box(first, last, radius_squ_);
-				for (const QueryContext::PointRange& range : context.point_ranges_)
-				{
-					for (std::size_t i = range.begin; i < range.end; i++)
+
+					// stage leftover candidates with scalar box checks
+					// (rejected candidates are overwritten by the next one)
+					for (; i < range.end; i++)
 					{
 						const std::uint32_t idx = ordered_indices_[i];
-						const std::array<float, 3> point = aos_positions_.pos(idx);
+						const std::array<float, 3> point = referenced_pos(idx);
 						const float px = point[0], py = point[1], pz = point[2];
 						staged[0][N_staged] = px;
 						staged[1][N_staged] = py;

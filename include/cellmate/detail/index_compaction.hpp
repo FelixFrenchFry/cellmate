@@ -1,7 +1,9 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #include "simd.hpp"
 
@@ -78,6 +80,55 @@ namespace cellmate
 				*packed++ = values[first_set_bit(mask)];
 				mask &= mask - 1;
 			}
+#endif
+		}
+
+		// gathers x, y, z per lane through the point indices, loading only the valid lanes
+		// (computes offsets once for all coordinates, which must fit signed 32 bits, as SIMD gathers require)
+		inline void gather_coords(const std::array<const float*, 3>& coords, const std::uint32_t* indices, std::size_t stride,
+			std::size_t N_valid, float (&gathered)[3][DistQuery::N_lanes]) noexcept
+		{
+#if CELLMATE_DETAIL_SIMD_WIDTH == 512
+			__m512i offsets = _mm512_loadu_si512(indices);
+			if (stride != 1) { offsets = _mm512_mullo_epi32(offsets, _mm512_set1_epi32(static_cast<int>(stride))); }
+			if (N_valid >= 16)
+			{
+				_mm512_storeu_ps(gathered[0], _mm512_i32gather_ps(offsets, coords[0], 4));
+				_mm512_storeu_ps(gathered[1], _mm512_i32gather_ps(offsets, coords[1], 4));
+				_mm512_storeu_ps(gathered[2], _mm512_i32gather_ps(offsets, coords[2], 4));
+			}
+			else
+			{
+				const __mmask16 valid = static_cast<__mmask16>((1u << N_valid) - 1u);
+				_mm512_storeu_ps(gathered[0], _mm512_mask_i32gather_ps(_mm512_setzero_ps(), valid, offsets, coords[0], 4));
+				_mm512_storeu_ps(gathered[1], _mm512_mask_i32gather_ps(_mm512_setzero_ps(), valid, offsets, coords[1], 4));
+				_mm512_storeu_ps(gathered[2], _mm512_mask_i32gather_ps(_mm512_setzero_ps(), valid, offsets, coords[2], 4));
+			}
+#elif CELLMATE_DETAIL_SIMD_WIDTH == 256
+			__m256i offsets = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(indices));
+			if (stride != 1) { offsets = _mm256_mullo_epi32(offsets, _mm256_set1_epi32(static_cast<int>(stride))); }
+			if (N_valid >= 8)
+			{
+				_mm256_storeu_ps(gathered[0], _mm256_i32gather_ps(coords[0], offsets, 4));
+				_mm256_storeu_ps(gathered[1], _mm256_i32gather_ps(coords[1], offsets, 4));
+				_mm256_storeu_ps(gathered[2], _mm256_i32gather_ps(coords[2], offsets, 4));
+			}
+			else
+			{
+				const __m256 valid = _mm256_castsi256_ps(_mm256_cmpgt_epi32(_mm256_set1_epi32(static_cast<int>(N_valid)),
+					_mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7)));
+				_mm256_storeu_ps(gathered[0], _mm256_mask_i32gather_ps(_mm256_setzero_ps(), coords[0], offsets, valid, 4));
+				_mm256_storeu_ps(gathered[1], _mm256_mask_i32gather_ps(_mm256_setzero_ps(), coords[1], offsets, valid, 4));
+				_mm256_storeu_ps(gathered[2], _mm256_mask_i32gather_ps(_mm256_setzero_ps(), coords[2], offsets, valid, 4));
+			}
+#else
+			// copy the single lane's coordinates from its bytes
+			// (avoids undefined behavior from indexing cast AoS 'float*' bases, unused by the scalar backend)
+			(void)N_valid;
+			const std::size_t offset_bytes = std::size_t(indices[0]) * stride * sizeof(float);
+			std::memcpy(&gathered[0][0], reinterpret_cast<const unsigned char*>(coords[0]) + offset_bytes, sizeof(float));
+			std::memcpy(&gathered[1][0], reinterpret_cast<const unsigned char*>(coords[1]) + offset_bytes, sizeof(float));
+			std::memcpy(&gathered[2][0], reinterpret_cast<const unsigned char*>(coords[2]) + offset_bytes, sizeof(float));
 #endif
 		}
 
