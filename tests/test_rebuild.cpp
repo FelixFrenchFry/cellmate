@@ -12,6 +12,22 @@
 #include <stdexcept>
 #include <vector>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+namespace
+{
+#ifdef _OPENMP
+	// restores the OpenMP thread count of the calling thread, also after failed assertions
+	struct ThreadCountGuard
+	{
+		const int N_threads = omp_get_max_threads();
+		~ThreadCountGuard() { omp_set_num_threads(N_threads); }
+	};
+#endif
+}
+
 // verifies query results and cache invalidation after rebuilds
 // (moves points and changes point count between rebuilds)
 TEST(NeighborSearchRebuild, RebuildMatchesBruteForce)
@@ -282,5 +298,94 @@ TEST(NeighborSearchRebuild, PointCountsBeyond32BitThrow)
 	}
 #else
 	GTEST_SKIP() << "point counts beyond 32 bits are not representable";
+#endif
+}
+
+// verifies that extents beyond 21-bit cell coordinates fail, clear the search, and allow reuse
+// (covers each axis and direction, and both storage and execution modes)
+TEST(NeighborSearchRebuild, ExtentsBeyond21BitCellsThrow)
+{
+	// enough points for parallel rebuilds, with one coordinate moved far from the others
+	auto points = cellmate_helpers::make_uniform_cloud(8193, 41, 0.0f, 4.0f);
+	float* const coordinates[]{ points.x.data(), points.y.data(), points.z.data() };
+	const float far = float(1u << 22), wide = float(1u << 20);
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+		{
+			for (std::size_t axis = 0; axis < 3; axis++)
+			{
+				for (float sign : { 1.0f, -1.0f })
+				{
+					SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
+						<< ", 'execution' = " << static_cast<int>(execution) << ", axis = " << axis << ", sign = " << sign);
+					const float original = coordinates[axis][0];
+					cellmate::NeighborSearch search(1.0f, storage);
+					search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), execution);
+					coordinates[axis][0] = sign * far;
+					EXPECT_THROW(search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), execution),
+						std::out_of_range);
+					std::vector<std::uint32_t> neighbors{ 99 };
+					std::vector<std::size_t> offsets;
+					search.query({ points.x[1], points.y[1], points.z[1] }, neighbors);
+					ASSERT_TRUE(neighbors.empty());
+					search.query_batch(points.x.data() + 1, points.y.data() + 1, points.z.data() + 1, 1, neighbors, offsets, execution);
+					ASSERT_TRUE(neighbors.empty());
+					ASSERT_EQ(offsets, (std::vector<std::size_t>{ 0, 0 }));
+
+					// wide extents within 21-bit cell coordinates still rebuild and match brute force
+					coordinates[axis][0] = sign * wide;
+					search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), execution);
+					std::vector<std::uint32_t> expected;
+					for (std::size_t i : { std::size_t(0), std::size_t(1) })
+					{
+						const std::array<float, 3> query_pos{ points.x[i], points.y[i], points.z[i] };
+						search.query(query_pos, neighbors);
+						cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(),
+							points.x.size(), 1.0f, query_pos, expected);
+						std::sort(neighbors.begin(), neighbors.end());
+						ASSERT_EQ(neighbors, expected) << "query index = " << i;
+					}
+					coordinates[axis][0] = original;
+				}
+			}
+		}
+	}
+}
+
+// verifies that parallel rebuilds match sequential rebuilds for different OpenMP thread counts
+// (point counts around the parallel threshold, more threads than chunks, and reused rebuild buffers)
+TEST(NeighborSearchRebuild, ThreadCountsMatchSequentialRebuilds)
+{
+#ifdef _OPENMP
+	ThreadCountGuard guard;
+	const auto points = cellmate_helpers::make_uniform_cloud(20011, 53, -5.0f, 5.0f);
+	std::vector<std::uint32_t> neighbors, expected_neighbors;
+	std::vector<std::size_t> offsets, expected_offsets;
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		cellmate::NeighborSearch search(1.0f, storage);
+		for (std::size_t N_points : { 8191u, 8192u, 8193u, 20011u })
+		{
+			cellmate::NeighborSearch expected_search(1.0f, storage);
+			expected_search.rebuild(points.x.data(), points.y.data(), points.z.data(), N_points, cellmate::ComputeMode::seq);
+			expected_search.query_batch(points.x.data(), points.y.data(), points.z.data(), N_points,
+				expected_neighbors, expected_offsets, cellmate::ComputeMode::seq, cellmate::QueryOrder::input);
+			ASSERT_GT(expected_neighbors.size(), 0u);
+			for (int N_threads : { 1, 2, 3, 9 })
+			{
+				SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
+					<< ", point count = " << N_points << ", thread count = " << N_threads);
+				omp_set_num_threads(N_threads);
+				search.rebuild(points.x.data(), points.y.data(), points.z.data(), N_points, cellmate::ComputeMode::par);
+				search.query_batch(points.x.data(), points.y.data(), points.z.data(), N_points,
+					neighbors, offsets, cellmate::ComputeMode::seq, cellmate::QueryOrder::input);
+				ASSERT_EQ(offsets, expected_offsets);
+				ASSERT_EQ(neighbors, expected_neighbors);
+			}
+		}
+	}
+#else
+	GTEST_SKIP() << "thread counts require OpenMP";
 #endif
 }

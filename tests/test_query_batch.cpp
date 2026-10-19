@@ -14,6 +14,22 @@
 #include <thread>
 #include <vector>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+namespace
+{
+#ifdef _OPENMP
+	// restores the OpenMP thread count of the calling thread, also after failed assertions
+	struct ThreadCountGuard
+	{
+		const int N_threads = omp_get_max_threads();
+		~ThreadCountGuard() { omp_set_num_threads(N_threads); }
+	};
+#endif
+}
+
 // verify that explicit test builds use the requested backend
 #if defined(CELLMATE_SIMD_SCALAR)
 static_assert(cellmate::detail::DistQuery::N_lanes == 1, "SCALAR tests must use the scalar backend");
@@ -877,6 +893,53 @@ TEST(NeighborSearchQueryBatch, ParallelQuerySortMatchesInputOrder)
 			}
 		}
 	}
+}
+
+// verifies that parallel batches match sequential batches for different OpenMP thread counts
+// (query counts around the parallel thresholds, more threads than chunks, and both query orders)
+TEST(NeighborSearchQueryBatch, ThreadCountsMatchSequentialBatches)
+{
+#ifdef _OPENMP
+	ThreadCountGuard guard;
+	const auto points = cellmate_helpers::make_uniform_cloud(10003, 91, -5.0f, 5.0f);
+	const auto queries = cellmate_helpers::make_uniform_cloud(20011, 67, -6.0f, 6.0f);
+	for (cellmate::PointAccess storage : { cellmate::PointAccess::cpy, cellmate::PointAccess::ref })
+	{
+		cellmate::NeighborSearch search(1.0f, storage);
+		search.rebuild(points.x.data(), points.y.data(), points.z.data(), points.x.size(), cellmate::ComputeMode::seq);
+
+		// rows of each query prefix match the same rows of the full sequential batch
+		std::vector<std::uint32_t> expected_neighbors;
+		std::vector<std::size_t> expected_offsets;
+		search.query_batch(queries.x.data(), queries.y.data(), queries.z.data(), queries.x.size(),
+			expected_neighbors, expected_offsets, cellmate::ComputeMode::seq, cellmate::QueryOrder::input);
+		ASSERT_GT(expected_neighbors.size(), 0u);
+
+		std::vector<std::uint32_t> neighbors;
+		std::vector<std::size_t> offsets;
+		for (int N_threads : { 1, 2, 3, 9 })
+		{
+			omp_set_num_threads(N_threads);
+			for (std::size_t N_queries : { 127u, 128u, 129u, 8191u, 8192u, 8193u, 20011u })
+			{
+				for (cellmate::QueryOrder order : { cellmate::QueryOrder::morton, cellmate::QueryOrder::input })
+				{
+					SCOPED_TRACE(::testing::Message() << "'storage' = " << static_cast<int>(storage)
+						<< ", thread count = " << N_threads << ", query count = " << N_queries
+						<< ", query order = " << static_cast<int>(order));
+					search.query_batch(queries.x.data(), queries.y.data(), queries.z.data(), N_queries,
+						neighbors, offsets, cellmate::ComputeMode::par, order);
+					ASSERT_EQ(offsets.size(), N_queries + 1);
+					ASSERT_TRUE(std::equal(offsets.begin(), offsets.end(), expected_offsets.begin()));
+					ASSERT_EQ(neighbors.size(), expected_offsets[N_queries]);
+					ASSERT_TRUE(std::equal(neighbors.begin(), neighbors.end(), expected_neighbors.begin()));
+				}
+			}
+		}
+	}
+#else
+	GTEST_SKIP() << "thread counts require OpenMP";
+#endif
 }
 
 // verifies public validation and empty results when query ordering is bypassed
