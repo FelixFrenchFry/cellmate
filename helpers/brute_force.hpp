@@ -25,11 +25,10 @@ namespace cellmate_helpers
 		{
 			throw std::length_error("'cellmate_helpers::brute_force()' 'N_points' exceeds 32-bit point count limits");
 		}
-		const std::uint32_t N_points_32 = static_cast<std::uint32_t>(N_points);
 		const float radius_squ = radius * radius;
 
 		// check every point, including self and points on the cutoff
-		for (std::uint32_t i = 0; i < N_points_32; i++)
+		for (std::uint32_t i = 0; i < N_points; i++)
 		{
 			const float dx = query_pos[0] - x[i];
 			const float dy = query_pos[1] - y[i];

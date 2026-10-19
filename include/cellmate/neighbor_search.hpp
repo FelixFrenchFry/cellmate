@@ -133,7 +133,7 @@ namespace cellmate
 			{
 				rebuild_par(positions, static_cast<std::uint32_t>(N_points), N_threads);
 			}
-			else
+			else // seq fallback despite par enabled
 			{
 				rebuild_seq(positions, static_cast<std::uint32_t>(N_points));
 			}
@@ -217,14 +217,58 @@ namespace cellmate
 				throw std::invalid_argument("'cellmate::query_batch()' requires non-null positions (and a valid 'stride_bytes' for AoS input)");
 			}
 
-			// validate query positions before starting parallel work
+#ifdef _OPENMP
+			// select sequential or parallel version on execution mode and heuristics
+			// TODO: use proper cost metric that includes neighbor density (derived from number of points and number of occupied cells)?
+			const int N_threads = select_thread_count(N_queries, exec, N_batch_queries_min_par_);
+			const bool use_par = exec == ComputeMode::par && N_threads > 1 &&
+				N_queries <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)());
+#endif
+
+			// validate query positions before modifying outputs, in parallel if possible
 			// TODO: disable in release builds for performance?
+			// TODO: put this into the loop that computes Morton keys to save one pass over the query positions?
+			bool finite = true;
+#ifdef _OPENMP
+			if (use_par && N_queries >= N_batch_scan_queries_min_par_)
+			{
+				#pragma omp parallel for schedule(static) num_threads(N_threads) reduction(&&:finite)
+				for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_queries); i++)
+				{
+					const std::size_t idx = static_cast<std::size_t>(i);
+					finite = finite && std::isfinite(queries.x(idx)) &&
+									   std::isfinite(queries.y(idx)) &&
+									   std::isfinite(queries.z(idx));
+				}
+			}
+			else // seq fallback for small batches or seq mode
+			{
+				for (std::size_t i = 0; i < N_queries; i++)
+				{
+					if (!std::isfinite(queries.x(i)) ||
+						!std::isfinite(queries.y(i)) ||
+						!std::isfinite(queries.z(i)))
+					{
+						finite = false;
+						break;
+					}
+				}
+			}
+#else
 			for (std::size_t i = 0; i < N_queries; i++)
 			{
-				if (!std::isfinite(queries.x(i)) || !std::isfinite(queries.y(i)) || !std::isfinite(queries.z(i)))
+				if (!std::isfinite(queries.x(i)) ||
+					!std::isfinite(queries.y(i)) ||
+					!std::isfinite(queries.z(i)))
 				{
-					throw std::invalid_argument("'cellmate::query_batch()' query positions must be finite");
+					finite = false;
+					break;
 				}
+			}
+#endif
+			if (!finite)
+			{
+				throw std::invalid_argument("'cellmate::query_batch()' query positions must be finite");
 			}
 
 			// prepare output ranges, including empty search results
@@ -243,15 +287,11 @@ namespace cellmate
 			if (order == QueryOrder::morton) { scratch.query_order_.resize(N_queries); }
 
 #ifdef _OPENMP
-			// select sequential or parallel version on execution mode and heuristics
-			// TODO: use proper cost metric that includes neighbor density (derived from number of points and number of occupied cells)?
-			const int N_threads = select_thread_count(N_queries, exec, N_batch_queries_min_par_);
-			if (exec == ComputeMode::par && N_threads > 1 &&
-				N_queries <= static_cast<std::size_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
+			if (use_par)
 			{
 				query_batch_par(queries, static_cast<std::ptrdiff_t>(N_queries), scratch, neighbors, offsets, N_threads, order);
 			}
-			else
+			else // seq fallback despite par enabled
 			{
 				query_batch_seq(queries, static_cast<std::uint32_t>(N_queries), scratch, neighbors, offsets, order);
 			}
@@ -328,6 +368,7 @@ namespace cellmate
 			std::vector<PointEntry> query_order_scratch_; // alternate buffer for radix sort passes
 			std::vector<std::array<std::size_t, 256>> radix_offsets_; // per-chunk byte counts and offsets for parallel radix sort
 			std::vector<std::vector<std::uint32_t>> chunk_neighbors_; // neighbors collected per chunk before restoring query row order
+			std::vector<std::size_t> chunk_offsets_; // neighbor counts, then output offsets, per chunk of original queries
 		};
 
 		// share scratch between SoA and AoS batches on the calling thread
@@ -369,9 +410,12 @@ namespace cellmate
 		static constexpr std::size_t N_queries_min_staged_ = 3;
 		static constexpr std::size_t N_queries_min_scalar_staged_ = 6;
 		// minimum sizes for running parallelized operations with the full team instead of sequentially
+		// WARNING: fixed sizes regardless of number of threads, but fork/join overhead grows with the team size
+		// TODO: scale thresholds with the thread count, e.g. max(base, K * N_threads)?
 		static constexpr std::size_t N_rebuild_points_min_par_ = 8192;
 		static constexpr std::size_t N_radix_sort_entries_min_par_ = 8192;
 		static constexpr std::size_t N_batch_queries_min_par_ = 128;
+		static constexpr std::size_t N_batch_scan_queries_min_par_ = 8192;
 		// bounds for entries per chunk of parallel radix sorts and cell table construction
 		static constexpr std::size_t N_chunk_entries_min_ = 1024;
 		static constexpr std::size_t N_chunk_entries_max_ = 4096;
@@ -1027,6 +1071,7 @@ namespace cellmate
 			if (order == QueryOrder::morton)
 			{
 				// assign Morton keys and original indices to each query in parallel
+				// TODO: implement another version of query_morton_key() to be able to use SIMD?
 				#pragma omp parallel for schedule(static) num_threads(N_threads)
 				for (std::ptrdiff_t i = 0; i < N_queries; i++)
 				{
@@ -1040,7 +1085,7 @@ namespace cellmate
 				{
 					sort_point_order_par(query_order, scratch.query_order_scratch_, scratch.radix_offsets_, max_key, N_threads);
 				}
-				else
+				else // seq fallback for small batches
 				{
 					sort_point_order_seq(query_order, scratch.query_order_scratch_, max_key);
 				}
@@ -1101,17 +1146,68 @@ namespace cellmate
 			}
 			if (error) { std::rethrow_exception(error); }
 
-			// convert counts into output positions in the caller's original query order
 			std::size_t N_neighbors = 0;
-			for (std::ptrdiff_t i = 0; i < N_queries; i++)
+			if (N_queries >= static_cast<std::ptrdiff_t>(N_batch_scan_queries_min_par_))
 			{
-				const std::size_t count = offsets[i];
-				if (count > neighbors.max_size() - N_neighbors)
+				// count neighbors of the original queries separately for each chunk
+				// (chunk buffers already hold all neighbors, so these sums cannot overflow)
+				std::vector<std::size_t>& chunk_offsets = scratch.chunk_offsets_;
+				chunk_offsets.resize(N_chunks);
+				#pragma omp parallel for schedule(static) num_threads(N_threads)
+				for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 				{
-					throw std::length_error("'cellmate::query_batch()' neighbor count exceeds output limits");
+					const std::ptrdiff_t begin = chunk * chunk_size;
+					const std::ptrdiff_t end = begin + (std::min)(chunk_size, N_queries - begin);
+					std::size_t count = 0;
+					for (std::ptrdiff_t i = begin; i < end; i++)
+					{
+						count += offsets[i];
+					}
+					chunk_offsets[chunk] = count;
 				}
-				offsets[i] = N_neighbors;
-				N_neighbors += count;
+
+				// convert counts into output positions in chunk order
+				for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
+				{
+					const std::size_t count = chunk_offsets[chunk];
+					// TODO: disable this check in release builds? or find better solution?
+					if (count > neighbors.max_size() - N_neighbors)
+					{
+						throw std::length_error("'cellmate::query_batch()' neighbor count exceeds output limits");
+					}
+					chunk_offsets[chunk] = N_neighbors;
+					N_neighbors += count;
+				}
+
+				// convert each chunk's counts into output positions in the caller's original query order
+				#pragma omp parallel for schedule(static) num_threads(N_threads)
+				for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
+				{
+					const std::ptrdiff_t begin = chunk * chunk_size;
+					const std::ptrdiff_t end = begin + (std::min)(chunk_size, N_queries - begin);
+					std::size_t offset = chunk_offsets[chunk];
+					for (std::ptrdiff_t i = begin; i < end; i++)
+					{
+						const std::size_t count = offsets[i];
+						offsets[i] = offset;
+						offset += count;
+					}
+				}
+			}
+			else // seq fallback for small batches
+			{
+				// convert counts into output positions in the caller's original query order
+				for (std::ptrdiff_t i = 0; i < N_queries; i++)
+				{
+					const std::size_t count = offsets[i];
+					// TODO: disable this check in release builds? or find better solution?
+					if (count > neighbors.max_size() - N_neighbors)
+					{
+						throw std::length_error("'cellmate::query_batch()' neighbor count exceeds output limits");
+					}
+					offsets[i] = N_neighbors;
+					N_neighbors += count;
+				}
 			}
 			offsets[N_queries] = N_neighbors;
 			neighbors.resize(N_neighbors);
@@ -1315,7 +1411,7 @@ namespace cellmate
 				sort_point_order_par(point_order_, point_order_scratch_, radix_offsets_,
 					morton_key(last_cell_[0], last_cell_[1], last_cell_[2]), N_threads);
 			}
-			else
+			else // seq fallback for small point counts
 			{
 				sort_point_order_seq(point_order_, point_order_scratch_,
 					morton_key(last_cell_[0], last_cell_[1], last_cell_[2]));
