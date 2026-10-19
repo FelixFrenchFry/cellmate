@@ -136,6 +136,7 @@ jobs:
       OMP_NUM_THREADS: '2'
       OMP_DYNAMIC: 'FALSE'
       ASAN_OPTIONS: 'detect_leaks=1:halt_on_error=1'
+      LSAN_OPTIONS: 'suppressions=${{ github.workspace }}/.github/lsan.supp'
       ASAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer-21
       UBSAN_OPTIONS: 'print_stacktrace=1:halt_on_error=1:external_symbolizer_path=/usr/bin/llvm-symbolizer-21'
     steps:

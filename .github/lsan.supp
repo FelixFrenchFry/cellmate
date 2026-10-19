@@ -1,0 +1,4 @@
+# LeakSanitizer suppressions for the ASan + UBSan jobs
+# (LLVM libomp leaks internal allocations after team size changes between parallel regions, seen with Clang 21,
+# matched on its internal allocator so leaks from cellmate code inside parallel regions still fail)
+leak:___kmp_allocate
