@@ -1297,9 +1297,9 @@ namespace cellmate
 			point_order_.resize(N_points); // TODO: find alternative that grows with extra margin to avoid repeated allocations?
 			for (std::uint32_t i = 0; i < N_points; i++)
 			{
-				const std::uint32_t cx = cell_coord(positions.x(i), 0);
-				const std::uint32_t cy = cell_coord(positions.y(i), 1);
-				const std::uint32_t cz = cell_coord(positions.z(i), 2);
+				const std::uint32_t cx = grid_cell_coord(positions.x(i), 0);
+				const std::uint32_t cy = grid_cell_coord(positions.y(i), 1);
+				const std::uint32_t cz = grid_cell_coord(positions.z(i), 2);
 				point_order_[i] = { morton_key(cx, cy, cz), i };
 			}
 
@@ -1400,9 +1400,9 @@ namespace cellmate
 			for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_points); i++)
 			{
 				const std::size_t idx = static_cast<std::size_t>(i);
-				const std::uint32_t cx = cell_coord(positions.x(idx), 0);
-				const std::uint32_t cy = cell_coord(positions.y(idx), 1);
-				const std::uint32_t cz = cell_coord(positions.z(idx), 2);
+				const std::uint32_t cx = grid_cell_coord(positions.x(idx), 0);
+				const std::uint32_t cy = grid_cell_coord(positions.y(idx), 1);
+				const std::uint32_t cz = grid_cell_coord(positions.z(idx), 2);
 				point_order_[i] = { morton_key(cx, cy, cz), static_cast<std::uint32_t>(i) };
 			}
 
@@ -1835,15 +1835,26 @@ namespace cellmate
 			return std::floor((double(coordinate) - double(origin_[axis])) * cell_width_inv_);
 		}
 
-		// converts one position coordinate to a cell coordinate relative to the grid origin
+		// converts one position coordinate to a cell coordinate relative to the grid origin, validating the grid extent
+		// (used once per axis on the maximum (x,y,z) to set 'last_cell_', outside of parallel regions)
 		std::uint32_t cell_coord(float coordinate, std::size_t axis) const
 		{
 			const double cell_coordinate = unclamped_cell_coord(coordinate, axis);
 
-			if (cell_coordinate >= (1u << 21)) // TODO: disable in release builds?
+			if (cell_coordinate >= (1u << 21))
 			{
 				throw std::out_of_range("'cellmate::rebuild()' extent exceeds 21-bit cell coordinates");
 			}
+
+			return static_cast<std::uint32_t>(cell_coordinate);
+		}
+
+		// converts one position coordinate inside the validated grid to a cell coordinate, without extent checks
+		// (monotonic rounding keeps every point's cell coordinates between 0 and the validated 'last_cell_')
+		std::uint32_t grid_cell_coord(float coordinate, std::size_t axis) const
+		{
+			const double cell_coordinate = unclamped_cell_coord(coordinate, axis);
+			assert(cell_coordinate >= 0.0 && cell_coordinate <= double(last_cell_[axis]));
 
 			return static_cast<std::uint32_t>(cell_coordinate);
 		}
