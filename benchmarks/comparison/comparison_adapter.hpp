@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 namespace cellmate_bench
@@ -38,6 +39,25 @@ namespace cellmate_bench
 		std::vector<std::size_t> offsets;
 	};
 
+	// returns the total neighbor count of retained batch results
+	inline std::size_t batch_neighbor_count(const BatchResults& results)
+	{
+		return results.neighbors.size();
+	}
+
+	// returns the neighbors of one query of retained batch results
+	inline void batch_neighbors(const BatchResults& results, std::size_t query, std::vector<std::uint32_t>& neighbors)
+	{
+		if (results.offsets.size() <= query + 1 || results.offsets.front() != 0 ||
+			results.offsets.back() != results.neighbors.size() ||
+			!std::is_sorted(results.offsets.begin(), results.offsets.end()))
+		{
+			throw std::runtime_error("batch offsets do not describe the returned neighbors");
+		}
+		neighbors.assign(results.neighbors.begin() + results.offsets[query],
+			results.neighbors.begin() + results.offsets[query + 1]);
+	}
+
 	// reusable per-chunk storage of the shared loop
 	template<typename Adapter>
 	struct LoopScratch
@@ -61,7 +81,7 @@ namespace cellmate_bench
 		for (std::size_t i = 0; i < N_queries; i++)
 		{
 			adapter.query({ queries.x[i], queries.y[i], queries.z[i] }, output);
-			Adapter::append_indices(output, results.neighbors);
+			adapter.append_indices(output, results.neighbors);
 			results.offsets[i + 1] = results.neighbors.size();
 		}
 	}
@@ -95,7 +115,7 @@ namespace cellmate_bench
 				for (std::size_t i = begin; i < end; i++)
 				{
 					adapter.query({ queries.x[i], queries.y[i], queries.z[i] }, output);
-					Adapter::append_indices(output, neighbors);
+					adapter.append_indices(output, neighbors);
 					results.offsets[i + 1] = neighbors.size();
 				}
 			}

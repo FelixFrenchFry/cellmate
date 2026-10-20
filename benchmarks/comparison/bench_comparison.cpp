@@ -2,9 +2,18 @@
 #include <benchmark/benchmark.h>
 
 #include "comparison_matrix.hpp"
-#include "profiles/quick.hpp"
+#include "profiles/comparison.hpp"
 #include "adapters/cellmate.hpp"
 #include "adapters/nanoflann.hpp"
+#include "adapters/pico_tree.hpp"
+#include "adapters/unibn_octree.hpp"
+#include "adapters/compact_nsearch.hpp"
+#include "adapters/ponca.hpp"
+#include "adapters/cgal.hpp"
+#include "adapters/boost_rtree.hpp"
+#ifdef CELLMATE_COMPARISON_TREENSEARCH
+#include "adapters/tree_nsearch.hpp"
+#endif
 #include "../../helpers/brute_force.hpp"
 
 #include <algorithm>
@@ -75,7 +84,7 @@ namespace cellmate_bench
 #ifdef _OPENMP
 				const OpenMPSettings settings(config.N_max_threads);
 #endif
-				Adapter adapter(points, config);
+				Adapter adapter(workload, config);
 				typename Adapter::QueryOutput output;
 				BatchResults results;
 				LoopScratch<Adapter> scratch;
@@ -88,35 +97,42 @@ namespace cellmate_bench
 					case QueryMode::none:
 						break;
 					case QueryMode::single:
-						for (std::size_t i = 0; i < N_run; i++)
+						if constexpr (Adapter::query_support != Support::none)
 						{
-							N_neighbors += adapter.query({ queries.x[i], queries.y[i], queries.z[i] }, output);
-							benchmark::DoNotOptimize(output.data());
-							benchmark::ClobberMemory();
+							for (std::size_t i = 0; i < N_run; i++)
+							{
+								N_neighbors += adapter.query({ queries.x[i], queries.y[i], queries.z[i] }, output);
+								benchmark::DoNotOptimize(output.data());
+								benchmark::ClobberMemory();
+							}
 						}
 						break;
 					case QueryMode::batch:
 						if constexpr (Adapter::batch_support == Support::native)
 						{
-							adapter.query_batch(queries, N_run, results);
+							adapter.query_batch(N_run, results);
 						}
 						else
 						{
 							query_batch_loop(adapter, queries, N_run, config.compute_mode, config.N_max_threads, scratch, results);
 						}
-						N_neighbors = results.neighbors.size();
 						break;
+					}
+				};
+				// returns the total neighbor count of the last batch, outside timing since native formats may need a pass
+				const auto count_batch_neighbors = [&]()
+				{
+					if constexpr (Adapter::batch_support == Support::native)
+					{
+						return adapter.batch_neighbor_count(results);
+					}
+					else
+					{
+						return batch_neighbor_count(results);
 					}
 				};
 				const auto validate = [&]()
 				{
-					if (operation.query_mode == QueryMode::batch &&
-						(results.offsets.size() != config.N_queries + 1 || results.offsets.front() != 0 ||
-							results.offsets.back() != results.neighbors.size() ||
-							!std::is_sorted(results.offsets.begin(), results.offsets.end())))
-					{
-						throw std::runtime_error("batch offsets do not describe the returned neighbors");
-					}
 					// compare complete memberships at up to eight centers spread through the cloud
 					const std::size_t N_samples = (std::min)(config.N_queries, std::size_t(8));
 					std::vector<std::uint32_t> actual;
@@ -127,14 +143,20 @@ namespace cellmate_bench
 						const std::array<float, 3> query_pos{ queries.x[idx], queries.y[idx], queries.z[idx] };
 						if (operation.query_mode != QueryMode::batch)
 						{
-							adapter.query(query_pos, output);
-							actual.clear();
-							Adapter::append_indices(output, actual);
+							if constexpr (Adapter::query_support != Support::none)
+							{
+								adapter.query(query_pos, output);
+								actual.clear();
+								adapter.append_indices(output, actual);
+							}
+						}
+						else if constexpr (Adapter::batch_support == Support::native)
+						{
+							adapter.batch_neighbors(results, idx, actual);
 						}
 						else
 						{
-							actual.assign(results.neighbors.begin() + results.offsets[idx],
-								results.neighbors.begin() + results.offsets[idx + 1]);
+							batch_neighbors(results, idx, actual);
 						}
 						cellmate_helpers::brute_force(points.x.data(), points.y.data(), points.z.data(),
 							config.N_points, search_radius, query_pos, expected);
@@ -146,8 +168,19 @@ namespace cellmate_bench
 					}
 				};
 
+				// restores the input order outside timing for libraries that reorder their input on each rebuild,
+				// so every timed rebuild starts from the same unsorted positions
+				const auto prepare_rebuild = [&]()
+				{
+					if constexpr (Adapter::reorders_input)
+					{
+						adapter.prepare_rebuild();
+					}
+				};
+
 				// initialize reusable storage and check correctness outside timing
 				// (batches warm up with all queries to size their output and scratch buffers)
+				prepare_rebuild();
 				adapter.rebuild();
 				run_queries(operation.query_mode == QueryMode::single
 					? (std::min)(config.N_queries, N_warmup_queries) : config.N_queries);
@@ -155,7 +188,16 @@ namespace cellmate_bench
 
 				for (auto _ : state)
 				{
-					if (operation.rebuild_mode == RebuildMode::once) { adapter.rebuild(); }
+					if (operation.rebuild_mode == RebuildMode::once)
+					{
+						if constexpr (Adapter::reorders_input)
+						{
+							state.PauseTiming();
+							prepare_rebuild();
+							state.ResumeTiming();
+						}
+						adapter.rebuild();
+					}
 					run_queries(config.N_queries);
 					benchmark::DoNotOptimize(adapter);
 					benchmark::DoNotOptimize(output.data());
@@ -165,6 +207,7 @@ namespace cellmate_bench
 				}
 
 				validate();
+				if (operation.query_mode == QueryMode::batch) { N_neighbors = count_batch_neighbors(); }
 				state.counters["N_points"] = double(config.N_points);
 				state.counters["N_queries"] = double(config.N_queries);
 				state.counters["N_target_avg_nbrs"] = config.N_target_avg_nbrs;
@@ -201,7 +244,13 @@ namespace cellmate_bench
 			case QueryMode::single:
 				return Adapter::query_support != Support::none;
 			case QueryMode::batch:
-				return Adapter::batch_support != Support::none;
+				// libraries rebuilding within every batch are only measured with rebuilds
+				if (Adapter::batch_includes_rebuild)
+				{
+					return Adapter::batch_support != Support::none && operation.rebuild_mode == RebuildMode::once;
+				}
+				return Adapter::batch_support != Support::none &&
+					(operation.rebuild_mode == RebuildMode::none || Adapter::rebuild_support != Support::none);
 			}
 			return false;
 		}
@@ -277,7 +326,8 @@ namespace cellmate_bench
 				<< " rebuild=" << support_name(Adapter::rebuild_support)
 				<< " query=" << support_name(Adapter::query_support)
 				<< " query_batch=" << support_name(Adapter::batch_support)
-				<< " parallel_rebuild=" << (Adapter::parallel_rebuild ? "yes" : "no");
+				<< " parallel_rebuild=" << (Adapter::parallel_rebuild ? "yes" : "no")
+				<< " batch_includes_rebuild=" << (Adapter::batch_includes_rebuild ? "yes" : "no");
 			benchmark::AddCustomContext(std::string("library:") + Adapter::name, capabilities.str());
 
 			// iterate over entire parameter matrix
@@ -309,18 +359,27 @@ namespace cellmate_bench
 		register_library<CellmateAdapter<cellmate::PointAccess::cpy>>(matrix, failed);
 		register_library<CellmateAdapter<cellmate::PointAccess::ref>>(matrix, failed);
 		register_library<NanoflannAdapter>(matrix, failed);
+		register_library<PicoTreeAdapter>(matrix, failed);
+		register_library<UnibnOctreeAdapter>(matrix, failed);
+		register_library<CompactNSearchAdapter>(matrix, failed);
+		register_library<PoncaAdapter>(matrix, failed);
+		register_library<CgalAdapter>(matrix, failed);
+		register_library<BoostRtreeAdapter>(matrix, failed);
+#ifdef CELLMATE_COMPARISON_TREENSEARCH
+		register_library<TreeNSearchAdapter>(matrix, failed);
+#endif
 	}
 }
 
 int main(int argc, char** argv)
 {
 	const bool has_profile = argc > 1 && argv[1][0] != '-';
-	const std::string profile = has_profile ? argv[1] : "quick";
+	const std::string profile = has_profile ? argv[1] : "comparison";
 	cellmate_bench::ComparisonMatrix matrix;
-	if (profile == "quick") { matrix = cellmate_bench::quick_comparison_matrix(); }
+	if (profile == "comparison") { matrix = cellmate_bench::comparison_matrix(); }
 	else
 	{
-		std::cerr << "usage: cellmate_comparison [quick] [benchmark options]\n";
+		std::cerr << "usage: cellmate_comparison [comparison] [benchmark options]\n";
 		return 1;
 	}
 	if (has_profile)

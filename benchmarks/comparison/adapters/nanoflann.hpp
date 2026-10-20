@@ -43,31 +43,35 @@ namespace cellmate_bench
 		static constexpr Support query_support = Support::native;
 		static constexpr Support batch_support = Support::loop;
 		static constexpr bool parallel_rebuild = true;
+		static constexpr bool batch_includes_rebuild = false;
+		static constexpr bool reorders_input = false;
 
 		// native (index, squared distance) pairs
 		using QueryOutput = std::vector<nanoflann::ResultItem<std::uint32_t, float>>;
 
-		// builds use 'std::async' threads, queries leave the results unsorted (sorted by default)
-		NanoflannAdapter(const cellmate_helpers::PointCloud& points, const Config& config)
-			: dataset_{ &points, config.N_points },
+		// reads the positions in place, without conversion
+		NanoflannAdapter(const Workload& workload, const Config& config)
+			: dataset_{ &workload.points, config.N_points },
 			index_(3, dataset_, nanoflann::KDTreeSingleIndexAdaptorParams(10, // library default leaf size
 				nanoflann::KDTreeSingleIndexAdaptorFlags::SkipInitialBuildIndex, unsigned(config.N_max_threads)))
 		{
 		}
 
+		// rebuilds the existing index, using 'std::async' threads for parallel builds
 		void rebuild()
 		{
 			index_.buildIndex();
 		}
 
 		// takes the squared radius, with a strict cutoff (distance < radius)
+		// (results stay unsorted, since nanoflann sorts them by default)
 		std::size_t query(std::array<float, 3> query_pos, QueryOutput& output) const
 		{
 			return index_.radiusSearch(query_pos.data(), search_radius * search_radius,
 				output, nanoflann::SearchParameters(0, false));
 		}
 
-		static void append_indices(const QueryOutput& output, std::vector<std::uint32_t>& neighbors)
+		void append_indices(const QueryOutput& output, std::vector<std::uint32_t>& neighbors) const
 		{
 			for (const auto& match : output)
 			{
