@@ -4,6 +4,8 @@
 
 Efficient fixed-radius neighbor search in 3D point clouds, dense or sparse, header-only for C++14 and later.
 
+![Example of 7 neighbor queries in a 3D point cloud, with the fixed-radius query spheres illustrated.](docs/images/query_batch_example_rendering.png)
+
 The class `cellmate::NeighborSearch` finds every point within a radius of a query position and returns their indices. Under the hood, cellmate is a compact cell-linked list (CLL) in Morton order [Mor66], related to the CLL variant by Band et al. [BGT20] and the compact hashing it builds on [IABT11]. While the CLL has to be rebuilt whenever points move, rebuilds are extremely cheap, and queries read contiguous memory. Together, this optimizes for high query speed across a wide variety of point counts, densities and geometries.
 
 * **Time** - rebuilds take O(N) time for N points, using a radix sort on the Morton keys and a single pass to build the cells. A query costs O(log C + M) for C occupied cells and M candidate points in its surrounding cells, which is O(M) in practice thanks to a cell prefix directory and lookup cache. In comparison, tree-based data structures like k-d trees and octrees typically take O(N log N) to build and O(log N + M) per query.
@@ -13,7 +15,7 @@ The class `cellmate::NeighborSearch` finds every point within a radius of a quer
 
 ## How to use
 
-The example below indexes a vector of a custom particle struct, then finds all neighbors within a radius of 1.0 for one position and for every particle, including the particle itself.
+The example below indexes a vector of a custom particle struct, then finds all neighbors within a radius of 1.0 for one position and for every particle, including the particle itself:
 
 ```cpp
 #include <cellmate/neighbor_search.hpp>
@@ -52,7 +54,7 @@ int main()
 
 ## Settings
 
-These calls have optional settings, with defaults that fit most cases:
+These constructor and function calls use default settings that fit most cases, but can optionally be overridden with alternatives:
 
 | Setting | Passed to | Default | Alternative |
 |---|---|---|---|
