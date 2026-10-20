@@ -233,7 +233,8 @@ namespace cellmate
 #ifdef _OPENMP
 			if (use_par && N_queries >= N_batch_scan_queries_min_par_)
 			{
-				const std::size_t chunk_size = select_chunk_size(N_queries, N_threads);
+				// divide queries into one SIMD-aligned chunk per thread
+				const std::size_t chunk_size = select_even_chunk_size(N_queries, N_threads, detail::DistQuery::N_lanes);
 				const std::ptrdiff_t N_chunks = static_cast<std::ptrdiff_t>(
 					N_queries / chunk_size + (N_queries % chunk_size != 0));
 				#pragma omp parallel for schedule(static) num_threads(N_threads) reduction(&&:finite)
@@ -1054,15 +1055,23 @@ namespace cellmate
 			{
 				// assign Morton keys and original indices to each query in parallel chunks
 				const std::size_t N_keys = static_cast<std::size_t>(N_queries);
-				const std::size_t key_chunk_size = select_chunk_size(N_keys, N_threads);
-				const std::ptrdiff_t N_key_chunks = static_cast<std::ptrdiff_t>(
-					N_keys / key_chunk_size + (N_keys % key_chunk_size != 0));
-				#pragma omp parallel for schedule(static) num_threads(N_threads)
-				for (std::ptrdiff_t chunk = 0; chunk < N_key_chunks; chunk++)
+				if (N_keys >= N_batch_scan_queries_min_par_)
 				{
-					const std::size_t begin = static_cast<std::size_t>(chunk) * key_chunk_size;
-					const std::size_t end = begin + (std::min)(key_chunk_size, N_keys - begin);
-					assign_query_keys(queries, query_order, begin, end);
+					// one SIMD-aligned chunk per thread
+					const std::size_t key_chunk_size = select_even_chunk_size(N_keys, N_threads, detail::DistQuery::N_lanes);
+					const std::ptrdiff_t N_key_chunks = static_cast<std::ptrdiff_t>(
+						N_keys / key_chunk_size + (N_keys % key_chunk_size != 0));
+					#pragma omp parallel for schedule(static) num_threads(N_threads)
+					for (std::ptrdiff_t chunk = 0; chunk < N_key_chunks; chunk++)
+					{
+						const std::size_t begin = static_cast<std::size_t>(chunk) * key_chunk_size;
+						const std::size_t end = begin + (std::min)(key_chunk_size, N_keys - begin);
+						assign_query_keys(queries, query_order, begin, end);
+					}
+				}
+				else // seq fallback for small batches
+				{
+					assign_query_keys(queries, query_order, 0, N_keys);
 				}
 
 				// sort query indices by Morton key
@@ -1291,23 +1300,34 @@ namespace cellmate
 			return omp_get_max_threads();
 		}
 
-		// chooses the entries per chunk, aiming for one chunk per thread, with chunks of equal size
-		// (bounds limit per-chunk overhead for small chunks, and keep large inputs at the largest chunk size,
-		// while equalizing chunk sizes may undercut the lower bound slightly)
+		// chooses the entries per chunk for one or more chunks per thread, with chunks of equal size
+		// (for passes with per-chunk state, bounded in size so that large inputs get about equal chunk counts per thread)
 		static std::size_t select_chunk_size(std::size_t N_entries, int N_threads)
 		{
 			assert(N_threads > 0);
 			if (N_entries == 0) { return N_chunk_entries_min_; }
 
-			// one chunk per thread, within bounds
-			const std::size_t N_chunks_target = static_cast<std::size_t>(N_threads);
-			std::size_t chunk_size = N_entries / N_chunks_target + (N_entries % N_chunks_target != 0);
-			if (chunk_size < N_chunk_entries_min_) { chunk_size = N_chunk_entries_min_; }
-			if (chunk_size > N_chunk_entries_max_) { chunk_size = N_chunk_entries_max_; }
+			// one or more chunks per thread, within bounds
+			const std::size_t N_thread_chunks = static_cast<std::size_t>(N_threads);
+			const std::size_t thread_size = N_entries / N_thread_chunks + (N_entries % N_thread_chunks != 0);
+			const std::size_t N_chunks = thread_size < N_chunk_entries_min_
+				? N_entries / N_chunk_entries_min_ + (N_entries % N_chunk_entries_min_ != 0) // fewer chunks than threads
+				: N_thread_chunks * (thread_size / N_chunk_entries_max_ + (thread_size % N_chunk_entries_max_ != 0));
 
-			// equalize chunk sizes
-			const std::size_t N_chunks = N_entries / chunk_size + (N_entries % chunk_size != 0);
 			return N_entries / N_chunks + (N_entries % N_chunks != 0);
+		}
+
+		// chooses the entries per chunk for exactly one chunk per thread, rounded up to a multiple of 'alignment'
+		// (for passes without per-chunk state, aligned so that only the last chunk has a SIMD remainder)
+		static std::size_t select_even_chunk_size(std::size_t N_entries, int N_threads, std::size_t alignment)
+		{
+			assert(N_threads > 0 && alignment > 0);
+			if (N_entries == 0) { return alignment; }
+
+			const std::size_t N_thread_chunks = static_cast<std::size_t>(N_threads);
+			const std::size_t thread_size = N_entries / N_thread_chunks + (N_entries % N_thread_chunks != 0);
+
+			return (thread_size / alignment + (thread_size % alignment != 0)) * alignment;
 		}
 #endif
 
@@ -1315,8 +1335,8 @@ namespace cellmate
 		template<class Positions>
 		void rebuild_par(const Positions& positions, std::uint32_t N_points, int N_threads)
 		{
-			// divide points into chunks for parallel bounds and Morton keys
-			const std::size_t chunk_size = select_chunk_size(N_points, N_threads);
+			// divide points into one SIMD-aligned chunk per thread for parallel bounds and Morton keys
+			const std::size_t chunk_size = select_even_chunk_size(N_points, N_threads, detail::DistQuery::N_lanes);
 			const std::ptrdiff_t N_chunks = static_cast<std::ptrdiff_t>(
 				N_points / chunk_size + (N_points % chunk_size != 0));
 
