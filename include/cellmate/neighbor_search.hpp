@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "detail/cell_keys.hpp"
 #include "detail/index_compaction.hpp"
 #include "detail/positions.hpp"
 
@@ -232,39 +233,23 @@ namespace cellmate
 #ifdef _OPENMP
 			if (use_par && N_queries >= N_batch_scan_queries_min_par_)
 			{
+				const std::size_t chunk_size = select_chunk_size(N_queries, N_threads);
+				const std::ptrdiff_t N_chunks = static_cast<std::ptrdiff_t>(
+					N_queries / chunk_size + (N_queries % chunk_size != 0));
 				#pragma omp parallel for schedule(static) num_threads(N_threads) reduction(&&:finite)
-				for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_queries); i++)
+				for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 				{
-					const std::size_t idx = static_cast<std::size_t>(i);
-					finite = finite && std::isfinite(queries.x(idx)) &&
-									   std::isfinite(queries.y(idx)) &&
-									   std::isfinite(queries.z(idx));
+					const std::size_t begin = static_cast<std::size_t>(chunk) * chunk_size;
+					const std::size_t end = begin + (std::min)(chunk_size, N_queries - begin);
+					finite = finite && all_finite(queries, begin, end);
 				}
 			}
 			else // seq fallback for small batches or seq mode
 			{
-				for (std::size_t i = 0; i < N_queries; i++)
-				{
-					if (!std::isfinite(queries.x(i)) ||
-						!std::isfinite(queries.y(i)) ||
-						!std::isfinite(queries.z(i)))
-					{
-						finite = false;
-						break;
-					}
-				}
+				finite = all_finite(queries, 0, N_queries);
 			}
 #else
-			for (std::size_t i = 0; i < N_queries; i++)
-			{
-				if (!std::isfinite(queries.x(i)) ||
-					!std::isfinite(queries.y(i)) ||
-					!std::isfinite(queries.z(i)))
-				{
-					finite = false;
-					break;
-				}
-			}
+			finite = all_finite(queries, 0, N_queries);
 #endif
 			if (!finite)
 			{
@@ -1029,10 +1014,7 @@ namespace cellmate
 
 			// assign Morton keys and original indices to each query
 			std::vector<PointEntry>& query_order = scratch.query_order_;
-			for (std::uint32_t i = 0; i < N_queries; i++)
-			{
-				query_order[i] = { query_morton_key(queries.pos(i)), i };
-			}
+			assign_query_keys(queries, query_order, 0, N_queries);
 
 			// sort query indices by Morton key
 			sort_point_order_seq(query_order, scratch.query_order_scratch_,
@@ -1070,12 +1052,17 @@ namespace cellmate
 			std::vector<PointEntry>& query_order = scratch.query_order_;
 			if (order == QueryOrder::morton)
 			{
-				// assign Morton keys and original indices to each query in parallel
-				// TODO: implement another version of query_morton_key() to be able to use SIMD?
+				// assign Morton keys and original indices to each query in parallel chunks
+				const std::size_t N_keys = static_cast<std::size_t>(N_queries);
+				const std::size_t key_chunk_size = select_chunk_size(N_keys, N_threads);
+				const std::ptrdiff_t N_key_chunks = static_cast<std::ptrdiff_t>(
+					N_keys / key_chunk_size + (N_keys % key_chunk_size != 0));
 				#pragma omp parallel for schedule(static) num_threads(N_threads)
-				for (std::ptrdiff_t i = 0; i < N_queries; i++)
+				for (std::ptrdiff_t chunk = 0; chunk < N_key_chunks; chunk++)
 				{
-					query_order[i] = { query_morton_key(queries.pos(static_cast<std::size_t>(i))), static_cast<std::uint32_t>(i) };
+					const std::size_t begin = static_cast<std::size_t>(chunk) * key_chunk_size;
+					const std::size_t end = begin + (std::min)(key_chunk_size, N_keys - begin);
+					assign_query_keys(queries, query_order, begin, end);
 				}
 
 				// sort query indices by Morton key
@@ -1274,19 +1261,9 @@ namespace cellmate
 			// compute minimum and maximum (x,y,z)
 			std::array<float, 3> minimum{ positions.x(0), positions.y(0), positions.z(0) };
 			std::array<float, 3> maximum = minimum;
-			for (std::uint32_t i = 0; i < N_points; i++)
+			if (!expand_bounds(positions, 0, N_points, minimum, maximum))
 			{
-				if (!std::isfinite(positions.x(i)) || !std::isfinite(positions.y(i)) || !std::isfinite(positions.z(i)))
-				{
-					throw std::invalid_argument("'cellmate::rebuild()' coordinates must be finite");
-				}
-
-				minimum[0] = (std::min)(minimum[0], positions.x(i));
-				minimum[1] = (std::min)(minimum[1], positions.y(i));
-				minimum[2] = (std::min)(minimum[2], positions.z(i));
-				maximum[0] = (std::max)(maximum[0], positions.x(i));
-				maximum[1] = (std::max)(maximum[1], positions.y(i));
-				maximum[2] = (std::max)(maximum[2], positions.z(i));
+				throw std::invalid_argument("'cellmate::rebuild()' coordinates must be finite");
 			}
 
 			// set grid origin at the minimum (x,y,z) to avoid negative Morton keys and validate grid extent
@@ -1295,13 +1272,7 @@ namespace cellmate
 
 			// assign Morton keys and original indices to each point
 			point_order_.resize(N_points); // TODO: find alternative that grows with extra margin to avoid repeated allocations?
-			for (std::uint32_t i = 0; i < N_points; i++)
-			{
-				const std::uint32_t cx = grid_cell_coord(positions.x(i), 0);
-				const std::uint32_t cy = grid_cell_coord(positions.y(i), 1);
-				const std::uint32_t cz = grid_cell_coord(positions.z(i), 2);
-				point_order_[i] = { morton_key(cx, cy, cz), i };
-			}
+			assign_point_keys(positions, 0, N_points);
 
 			sort_point_order_seq(point_order_, point_order_scratch_,
 				morton_key(last_cell_[0], last_cell_[1], last_cell_[2]));
@@ -1344,6 +1315,11 @@ namespace cellmate
 		template<class Positions>
 		void rebuild_par(const Positions& positions, std::uint32_t N_points, int N_threads)
 		{
+			// divide points into chunks for parallel bounds and Morton keys
+			const std::size_t chunk_size = select_chunk_size(N_points, N_threads);
+			const std::ptrdiff_t N_chunks = static_cast<std::ptrdiff_t>(
+				N_points / chunk_size + (N_points % chunk_size != 0));
+
 			// compute minimum and maximum (x,y,z)
 			// (compute local bounds per thread, then merge into grid bounds)
 			std::array<float, 3> minimum{ positions.x(0), positions.y(0), positions.z(0) };
@@ -1356,21 +1332,11 @@ namespace cellmate
 				bool local_invalid = false;
 
 				#pragma omp for schedule(static)
-				for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_points); i++)
+				for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 				{
-					const std::size_t idx = static_cast<std::size_t>(i);
-					if (!std::isfinite(positions.x(idx)) || !std::isfinite(positions.y(idx)) || !std::isfinite(positions.z(idx)))
-					{
-						local_invalid = true;
-						continue;
-					}
-
-					local_min[0] = (std::min)(local_min[0], positions.x(idx));
-					local_min[1] = (std::min)(local_min[1], positions.y(idx));
-					local_min[2] = (std::min)(local_min[2], positions.z(idx));
-					local_max[0] = (std::max)(local_max[0], positions.x(idx));
-					local_max[1] = (std::max)(local_max[1], positions.y(idx));
-					local_max[2] = (std::max)(local_max[2], positions.z(idx));
+					const std::size_t begin = static_cast<std::size_t>(chunk) * chunk_size;
+					const std::size_t end = begin + (std::min)(chunk_size, N_points - begin);
+					if (!expand_bounds(positions, begin, end, local_min, local_max)) { local_invalid = true; }
 				}
 
 				#pragma omp critical(cellmate_rebuild_bounds)
@@ -1394,16 +1360,14 @@ namespace cellmate
 			origin_ = minimum;
 			last_cell_ = { cell_coord(maximum[0], 0), cell_coord(maximum[1], 1), cell_coord(maximum[2], 2) };
 
-			// assign Morton keys and original indices to each point in parallel
+			// assign Morton keys and original indices to each point in parallel chunks
 			point_order_.resize(N_points);
 			#pragma omp parallel for schedule(static) num_threads(N_threads)
-			for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(N_points); i++)
+			for (std::ptrdiff_t chunk = 0; chunk < N_chunks; chunk++)
 			{
-				const std::size_t idx = static_cast<std::size_t>(i);
-				const std::uint32_t cx = grid_cell_coord(positions.x(idx), 0);
-				const std::uint32_t cy = grid_cell_coord(positions.y(idx), 1);
-				const std::uint32_t cz = grid_cell_coord(positions.z(idx), 2);
-				point_order_[i] = { morton_key(cx, cy, cz), static_cast<std::uint32_t>(i) };
+				const std::size_t begin = static_cast<std::size_t>(chunk) * chunk_size;
+				const std::size_t end = begin + (std::min)(chunk_size, N_points - begin);
+				assign_point_keys(positions, begin, end);
 			}
 
 			if (point_order_.size() >= N_radix_sort_entries_min_par_)
@@ -1850,7 +1814,7 @@ namespace cellmate
 		}
 
 		// converts one position coordinate inside the validated grid to a cell coordinate, without extent checks
-		// (monotonic rounding keeps every point's cell coordinates between 0 and the validated 'last_cell_')
+		// (monotonic rounding guarantees every point's cell coordinates to be between 0 and the validated 'last_cell_')
 		std::uint32_t grid_cell_coord(float coordinate, std::size_t axis) const
 		{
 			const double cell_coordinate = unclamped_cell_coord(coordinate, axis);
@@ -1881,6 +1845,138 @@ namespace cellmate
 			// combo of Morton key + outside-grid bit
 			return (morton_key(cx, cy, cz) << 1) | std::uint64_t(outside_grid);
 		}
+
+		// expands the bounds by the positions in [begin, end), returning 'false' at the first non-finite coordinate
+		template<class Positions>
+		static bool expand_bounds(const Positions& positions, std::size_t begin, std::size_t end,
+			std::array<float, 3>& minimum, std::array<float, 3>& maximum)
+		{
+			for (std::size_t i = begin; i < end; i++)
+			{
+				if (!std::isfinite(positions.x(i)) ||
+					!std::isfinite(positions.y(i)) ||
+					!std::isfinite(positions.z(i)))
+				{
+					return false;
+				}
+
+				minimum[0] = (std::min)(minimum[0], positions.x(i));
+				minimum[1] = (std::min)(minimum[1], positions.y(i));
+				minimum[2] = (std::min)(minimum[2], positions.z(i));
+				maximum[0] = (std::max)(maximum[0], positions.x(i));
+				maximum[1] = (std::max)(maximum[1], positions.y(i));
+				maximum[2] = (std::max)(maximum[2], positions.z(i));
+			}
+			return true;
+		}
+
+		// returns whether all positions in [begin, end) are finite
+		template<class Positions>
+		static bool all_finite(const Positions& positions, std::size_t begin, std::size_t end)
+		{
+			for (std::size_t i = begin; i < end; i++)
+			{
+				if (!std::isfinite(positions.x(i)) ||
+					!std::isfinite(positions.y(i)) ||
+					!std::isfinite(positions.z(i)))
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		// assigns Morton keys and original indices to the points in [begin, end) of 'point_order_'
+		template<class Positions>
+		void assign_point_keys(const Positions& positions, std::size_t begin, std::size_t end)
+		{
+			for (std::size_t i = begin; i < end; i++)
+			{
+				const std::uint32_t cx = grid_cell_coord(positions.x(i), 0);
+				const std::uint32_t cy = grid_cell_coord(positions.y(i), 1);
+				const std::uint32_t cz = grid_cell_coord(positions.z(i), 2);
+				point_order_[i] = { morton_key(cx, cy, cz), static_cast<std::uint32_t>(i) };
+			}
+		}
+
+		// assigns Morton keys and original indices to the queries in [begin, end) of 'query_order'
+		template<class Positions>
+		void assign_query_keys(const Positions& queries, std::vector<PointEntry>& query_order, std::size_t begin, std::size_t end) const
+		{
+			for (std::size_t i = begin; i < end; i++)
+			{
+				query_order[i] = { query_morton_key(queries.pos(i)), static_cast<std::uint32_t>(i) };
+			}
+		}
+
+#if CELLMATE_DETAIL_SIMD_WIDTH != 0
+		// SoA versions with SIMD batches over contiguous coordinates
+		// (AoS positions and the scalar backend use the versions above)
+		static bool expand_bounds(const detail::Positions_SoA& positions, std::size_t begin, std::size_t end,
+			std::array<float, 3>& minimum, std::array<float, 3>& maximum)
+		{
+			return detail::expand_bounds(positions.x_ + begin, positions.y_ + begin, positions.z_ + begin,
+				end - begin, minimum, maximum);
+		}
+
+		static bool all_finite(const detail::Positions_SoA& positions, std::size_t begin, std::size_t end)
+		{
+			return detail::all_finite(positions.x_ + begin, positions.y_ + begin, positions.z_ + begin, end - begin);
+		}
+
+		// converts SoA points to Morton keys like 'grid_cell_coord()' and 'morton_key()', without extent checks
+		// (debug builds assert each key against the scalar version)
+		void assign_point_keys(const detail::Positions_SoA& positions, std::size_t begin, std::size_t end)
+		{
+			const std::size_t N_lanes = detail::N_key_lanes;
+			std::uint64_t keys[detail::N_key_lanes];
+
+			// local copies let the compiler hoist the broadcasts out of the loop
+			const std::array<float, 3> origin = origin_;
+			const double cell_width_inv = cell_width_inv_;
+
+			std::size_t i = begin;
+			for (; end - i >= N_lanes; i += N_lanes)
+			{
+				detail::point_cell_keys(positions.x_ + i, positions.y_ + i, positions.z_ + i, origin, cell_width_inv, keys);
+				for (std::size_t lane = 0; lane < N_lanes; lane++)
+				{
+					assert(keys[lane] == morton_key(grid_cell_coord(positions.x_[i + lane], 0),
+													grid_cell_coord(positions.y_[i + lane], 1),
+													grid_cell_coord(positions.z_[i + lane], 2)));
+					point_order_[i + lane] = { keys[lane], static_cast<std::uint32_t>(i + lane) };
+				}
+			}
+
+			// scalar remainder
+			assign_point_keys<detail::Positions_SoA>(positions, i, end);
+		}
+
+		void assign_query_keys(const detail::Positions_SoA& queries, std::vector<PointEntry>& query_order,
+			std::size_t begin, std::size_t end) const
+		{
+			const std::size_t N_lanes = detail::N_key_lanes;
+			std::uint64_t keys[detail::N_key_lanes];
+
+			// local copies let the compiler hoist the broadcasts out of the loop
+			const std::array<float, 3> origin = origin_;
+			const double cell_width_inv = cell_width_inv_;
+			const std::array<std::uint32_t, 3> last_cell = last_cell_;
+
+			std::size_t i = begin;
+			for (; end - i >= N_lanes; i += N_lanes)
+			{
+				detail::query_cell_keys(queries.x_ + i, queries.y_ + i, queries.z_ + i, origin, cell_width_inv, last_cell, keys);
+				for (std::size_t lane = 0; lane < N_lanes; lane++)
+				{
+					query_order[i + lane] = { keys[lane], static_cast<std::uint32_t>(i + lane) };
+				}
+			}
+
+			// scalar remainder
+			assign_query_keys<detail::Positions_SoA>(queries, query_order, i, end);
+		}
+#endif
 
 		// spreads 21 coordinate bits into bit positions 0, 3, 6, ..., 60 of a 63-bit key
 		static std::uint64_t spread_bits(std::uint32_t value)

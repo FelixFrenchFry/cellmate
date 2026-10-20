@@ -34,6 +34,7 @@ endif()
 
 # build the correctness tests
 add_executable(cellmate_tests
+	test_cell_keys.cpp
 	test_index_compaction.cpp
 	test_rebuild.cpp
 	test_query.cpp
