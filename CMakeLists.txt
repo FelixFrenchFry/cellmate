@@ -25,6 +25,11 @@ if(CELLMATE_BUILD_BENCHMARKS)
 	add_subdirectory(benchmarks)
 endif()
 
+option(CELLMATE_BUILD_COMPARISON "Build the library comparison benchmarks" OFF)
+if(CELLMATE_BUILD_COMPARISON)
+	add_subdirectory(benchmarks/comparison)
+endif()
+
 option(CELLMATE_BUILD_TESTS "Build the cellmate correctness tests" OFF)
 if(CELLMATE_BUILD_TESTS)
 	add_subdirectory(tests)
