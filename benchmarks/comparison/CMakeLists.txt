@@ -105,6 +105,46 @@ target_include_directories(cellmate_comparison SYSTEM PRIVATE
 )
 target_link_libraries(cellmate_comparison PRIVATE cellmate::cellmate benchmark::benchmark cellmate_comparison_compactnsearch)
 target_compile_features(cellmate_comparison PRIVATE cxx_std_17)
+
+# record the measured commit, compiler and flags in the benchmark context
+# encode flags as C++ byte escapes, so quotes and build-tool characters stay data
+function(comparison_encode_flags result flags)
+	string(HEX "${flags}" flags)
+	string(REGEX REPLACE "(..)" "\\\\x\\1" flags "${flags}")
+	set(${result} "${flags}" PARENT_SCOPE)
+endfunction()
+comparison_encode_flags(comparison_flags "${CMAKE_CXX_FLAGS}")
+if(CMAKE_CONFIGURATION_TYPES)
+	set(comparison_configs ${CMAKE_CONFIGURATION_TYPES})
+else()
+	set(comparison_configs "${CMAKE_BUILD_TYPE}")
+endif()
+foreach(config IN LISTS comparison_configs)
+	string(TOUPPER "${config}" config_upper)
+	comparison_encode_flags(config_flags " ${CMAKE_CXX_FLAGS_${config_upper}}")
+	string(APPEND comparison_flags "$<$<CONFIG:${config}>:${config_flags}>")
+endforeach()
+target_compile_definitions(cellmate_comparison PRIVATE
+	CELLMATE_COMPARISON_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
+	CELLMATE_COMPARISON_CONFIG="$<CONFIG>"
+	"CELLMATE_COMPARISON_FLAGS=\"${comparison_flags}\""
+)
+
+# refresh the revision on every build, writing the header only when it changes
+find_package(Git QUIET)
+set(comparison_revision_header "${CMAKE_CURRENT_BINARY_DIR}/comparison_revision.hpp")
+add_custom_target(cellmate_comparison_revision
+	COMMAND "${CMAKE_COMMAND}"
+		"-DCOMPARISON_GIT_EXECUTABLE=${GIT_EXECUTABLE}"
+		"-DCOMPARISON_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+		"-DCOMPARISON_REVISION_HEADER=${comparison_revision_header}"
+		-P "${CMAKE_CURRENT_LIST_DIR}/ComparisonContext.cmake"
+	BYPRODUCTS "${comparison_revision_header}"
+	VERBATIM
+)
+add_dependencies(cellmate_comparison cellmate_comparison_revision)
+target_include_directories(cellmate_comparison PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+
 if(CELLMATE_COMPARISON_TREENSEARCH)
 	target_compile_definitions(cellmate_comparison PRIVATE CELLMATE_COMPARISON_TREENSEARCH)
 	target_link_libraries(cellmate_comparison PRIVATE cellmate_comparison_treensearch)

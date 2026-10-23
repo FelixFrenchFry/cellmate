@@ -1,1 +1,15 @@
 /build/
+
+# ignore Python caches (can contain absolute source paths)
+__pycache__/
+*.py[cod]
+
+# ignore local environment files, but allow examples
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# ignore local Claude settings and worktrees
+.claude/settings.local.json
+.claude/worktrees/

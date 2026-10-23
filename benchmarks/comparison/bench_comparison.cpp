@@ -1,8 +1,14 @@
 #include <cellmate/neighbor_search.hpp>
 #include <benchmark/benchmark.h>
 
+#include "comparison_revision.hpp"
 #include "comparison_matrix.hpp"
 #include "profiles/comparison.hpp"
+#include "profiles/comp_points.hpp"
+#include "profiles/comp_queries.hpp"
+#include "profiles/comp_neighbors.hpp"
+#include "profiles/comp_threads.hpp"
+#include "profiles/comp_scenarios.hpp"
 #include "adapters/cellmate.hpp"
 #include "adapters/nanoflann.hpp"
 #include "adapters/pico_tree.hpp"
@@ -270,12 +276,13 @@ namespace cellmate_bench
 		template<typename Adapter, typename T>
 		void register_sweep(const Scenario* scenario, const Config& reference, const Operation& operation,
 			const char* experiment, const char* parameter_name, T Config::* member,
-			const std::vector<T>& values, bool& failed)
+			const std::vector<T>& values, bool& failed, bool queries_follow_points = false)
 		{
 			for (T value : values)
 			{
 				Config config = reference;
 				config.*member = value;
+				if (queries_follow_points) { config.N_queries = config.N_points; }
 				std::ostringstream name;
 				name << scenario->name << '/' << experiment << '/' << operation.name << '/' << parameter_name << ':' << value
 					<< "/library:" << Adapter::name
@@ -292,7 +299,7 @@ namespace cellmate_bench
 
 		template<typename Adapter>
 		void register_experiments(const Scenario* scenario, Config reference, const Operation& operation,
-			const SweepValues& sweeps, bool& failed)
+			const SweepValues& sweeps, bool queries_follow_points, bool& failed)
 		{
 			// WARNING: assumes cellmate runs sequentially with one thread and in parallel otherwise, update when this changes
 			reference.compute_mode = reference.N_max_threads > 1 ? cellmate::ComputeMode::par : cellmate::ComputeMode::seq;
@@ -300,7 +307,7 @@ namespace cellmate_bench
 			register_sweep<Adapter>(scenario, reference, operation, "reference", "N",
 				&Config::N_points, { reference.N_points }, failed);
 			register_sweep<Adapter>(scenario, reference, operation, "points", "N",
-				&Config::N_points, sweeps.N_points, failed);
+				&Config::N_points, sweeps.N_points, failed, queries_follow_points);
 			if (uses_queries(operation))
 			{
 				register_sweep<Adapter>(scenario, reference, operation, "queries", "N_queries",
@@ -347,7 +354,8 @@ namespace cellmate_bench
 					if (!uses_threads<Adapter>(operation) && N_threads != modes.N_threads.front()) { continue; }
 					if (!uses_queries(operation) && query_placement != modes.query_placement.front()) { continue; }
 
-					register_experiments<Adapter>(scenario, reference, operation, matrix.sweeps, failed);
+					register_experiments<Adapter>(scenario, reference, operation, matrix.sweeps,
+						matrix.queries_follow_points, failed);
 				}
 			}
 		}
@@ -377,9 +385,14 @@ int main(int argc, char** argv)
 	const std::string profile = has_profile ? argv[1] : "comparison";
 	cellmate_bench::ComparisonMatrix matrix;
 	if (profile == "comparison") { matrix = cellmate_bench::comparison_matrix(); }
+	else if (profile == "comp_points") { matrix = cellmate_bench::comp_points_matrix(); }
+	else if (profile == "comp_queries") { matrix = cellmate_bench::comp_queries_matrix(); }
+	else if (profile == "comp_neighbors") { matrix = cellmate_bench::comp_neighbors_matrix(); }
+	else if (profile == "comp_threads") { matrix = cellmate_bench::comp_threads_matrix(); }
+	else if (profile == "comp_scenarios") { matrix = cellmate_bench::comp_scenarios_matrix(); }
 	else
 	{
-		std::cerr << "usage: cellmate_comparison [comparison] [benchmark options]\n";
+		std::cerr << "usage: cellmate_comparison [comparison|comp_points|comp_queries|comp_neighbors|comp_threads|comp_scenarios] [benchmark options]\n";
 		return 1;
 	}
 	if (has_profile)
@@ -403,6 +416,19 @@ int main(int argc, char** argv)
 	benchmark::Initialize(&argc, arguments.data());
 	if (benchmark::ReportUnrecognizedArguments(argc, arguments.data())) { return 1; }
 	benchmark::AddCustomContext("profile", profile);
+
+	// record what is measured, since results are only comparable for the same commit, compiler and backend
+	benchmark::AddCustomContext("cellmate_commit", CELLMATE_COMPARISON_COMMIT);
+	benchmark::AddCustomContext("compiler", CELLMATE_COMPARISON_COMPILER);
+	benchmark::AddCustomContext("build_config", CELLMATE_COMPARISON_CONFIG);
+	benchmark::AddCustomContext("build_flags", CELLMATE_COMPARISON_FLAGS);
+	benchmark::AddCustomContext("cellmate_simd", CELLMATE_DETAIL_SIMD_WIDTH == 512 ? "AVX-512"
+		: CELLMATE_DETAIL_SIMD_WIDTH == 256 ? "AVX2" : "scalar");
+#ifdef _OPENMP
+	benchmark::AddCustomContext("openmp", std::to_string(_OPENMP));
+#else
+	benchmark::AddCustomContext("openmp", "off");
+#endif
 	bool failed = false;
 	cellmate_bench::register_benchmarks(matrix, failed);
 	benchmark::RunSpecifiedBenchmarks();

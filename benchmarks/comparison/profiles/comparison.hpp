@@ -36,7 +36,6 @@ namespace cellmate_bench
 
 		// individual sweeps through the parameter space
 		matrix.sweeps.N_points = {
-			1000,
 			10000,
 			100000,
 			1000000, // 1 mio

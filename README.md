@@ -13,7 +13,7 @@ The class `cellmate::NeighborSearch` finds every point within a radius of a quer
 * **Parallelism** - the rebuild and batch query pipelines are heavily parallelized using OpenMP directives. Additionally, each function has a sequential fallback version for builds without OpenMP or when this execution mode is specified.
 * **Vectorization** - distance checks, cell keys, candidate gathering, ... and other hot loops are vectorized using SIMD with AVX2 or AVX-512 intrinsics, selected at compile time. Additionally, each operation has a scalar fallback version with bit-identical results for CPUs or builds without these instruction sets.
 
-## How to use
+## Usage
 
 The example below indexes a vector of a custom particle struct, then finds all neighbors within a radius of 1.0 for one position and for every particle, including the particle itself:
 
