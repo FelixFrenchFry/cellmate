@@ -62,6 +62,36 @@ These constructor and function calls use default settings that fit most cases, b
 | `ComputeMode::` | `rebuild()`, `query_batch()` | `par` uses the parallelized version (if OpenMP enabled and input large enough) | `seq` uses the sequential version on the calling thread |
 | `QueryOrder::` | `query_batch()` | `morton` processes the queries in Morton order for more efficient traversal | `input` processes the queries in the supplied order (good if they already have spatial locality) |
 
+## Installation
+
+The library is header-only. Copy `include/cellmate/` into your project, add its parent directory to the include path, and include `cellmate/neighbor_search.hpp`.
+
+Or use CMake, from a subdirectory:
+```cmake
+add_subdirectory(<path/to/cellmate>)
+target_link_libraries(<your_project_name> cellmate::cellmate)
+```
+
+Or fetched at configure time:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(cellmate GIT_REPOSITORY https://github.com/FelixFrenchFry/cellmate.git GIT_TAG main)
+FetchContent_MakeAvailable(cellmate)
+target_link_libraries(your_project_name cellmate::cellmate)
+```
+
+The target only adds the include path, C++14 and the selected backend. It adds no architecture or floating-point flags. To use AVX2,compile with `-mavx2` (GCC/Clang) or `/arch:AVX2` (MSVC). To use OpenMP, configure with `-DCELLMATE_ENABLE_OPENMP=ON`.
+
+CI runs tests on Linux and Windows with GCC, Clang, and MSVC. AVX-512 builds are compile-checked only. See the [CI workflow](.github/workflows/tests.yml) for the full settings matrix.
+
+## Limitations
+
+* fp32 positions only (TODO: more dtypes)
+* no k-nearest neighbors query (TODO: implement)
+* 2^32 - 1 points limit
+* 2^21 cells along each axis limit
+
 ## References
 
 * [BGT20] S. Band, C. Gissler and M. Teschner, 2020. "Compressed Neighbour Lists for SPH", Computer Graphics Forum 39, 1, 531-542.

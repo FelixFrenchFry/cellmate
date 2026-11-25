@@ -7,8 +7,8 @@ namespace cellmate_bench
 	inline ComparisonMatrix comp_threads_matrix()
 	{
 		ComparisonMatrix matrix;
-		matrix.reference.N_points = 1'000'000;
-		matrix.reference.N_queries = 1'000'000;
+		matrix.reference.N_points = 500'000;
+		matrix.reference.N_queries = 500'000;
 		matrix.reference.N_target_avg_nbrs = 32.0;
 		matrix.reference.N_max_threads = 8;
 		matrix.reference.rng_seed = 67;
@@ -43,8 +43,11 @@ namespace cellmate_bench
 		matrix.sweeps.N_max_threads = {
 			1,
 			2,
+			3,
 			4,
+			5,
 			6,
+			7,
 			8,
 		};
 		return matrix;
