@@ -331,7 +331,7 @@ TEST(BenchmarkWorkloads, QuerySamplingIsDeterministic)
 		cellmate_bench::Config config;
 		config.query_placement = placement;
 		config.N_points = 128;
-		config.N_queries = 2053;
+		config.N_queries = config.N_points;
 		config.N_target_avg_nbrs = 8;
 		const auto& scenario = cellmate_bench::gradient_volume();
 		const auto first = cellmate_bench::prepare_workload(scenario, config);

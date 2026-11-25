@@ -62,6 +62,47 @@ These constructor and function calls use default settings that fit most cases, b
 | `ComputeMode::` | `rebuild()`, `query_batch()` | `par` uses the parallelized version (if OpenMP enabled and input large enough) | `seq` uses the sequential version on the calling thread |
 | `QueryOrder::` | `query_batch()` | `morton` processes the queries in Morton order for more efficient traversal | `input` processes the queries in the supplied order (good if they already have spatial locality) |
 
+## Benchmarks
+
+Google Benchmark suites measure rebuilds, single queries and batch queries across point counts, densities and distributions (uniform, clustered, anisotropic, lattice and spherical surfaces), with serial and parallel variants. A separate suite compares Cellmate with libraries such as:
+- [nanoflann](https://github.com/jlblancoc/nanoflann)
+- [PicoTree](https://github.com/Jaybro/pico_tree)
+- [jbehley/octree](https://github.com/jbehley/octree)
+- [CompactNSearch](https://github.com/InteractiveComputerGraphics/CompactNSearch)
+- [TreeNSearch](https://github.com/InteractiveComputerGraphics/TreeNSearch)
+
+It uses the same workloads and checks sampled neighbor lists against brute force. All benchmark plots below use measurements from a November 25, 2026 run. Bars show the mean of three repetitions, with whiskers extending one sample standard deviation on either side. Output layout and handling of self matches vary by adapter.
+
+### Serial
+
+![Single-threaded index rebuild across four point distributions](docs/images/cellmate-comparison-rebuild-only-1t-dark.png)
+
+![Single-threaded batch queries on an existing data index across four point distributions](docs/images/cellmate-comparison-batch-1t-dark.png)
+
+![Single-threaded index rebuild and batch queries across four point distributions](docs/images/cellmate-comparison-rebuild-batch-1t-dark.png)
+
+### Parallel
+
+The rebuild-only plot with 8 threads covers the 4 configurations with parallel rebuild support.
+
+![Index rebuild at eight requested threads across four point distributions](docs/images/cellmate-comparison-rebuild-only-dark.png)
+
+![Batch queries on an existing data index at eight requested threads across four point distributions](docs/images/cellmate-comparison-batch-dark.png)
+
+![Index rebuild and batch queries at eight requested threads across four point distributions](docs/images/cellmate-comparison-rebuild-batch-dark.png)
+
+### Scaling
+
+The scaling benchmark sweeps use uniform point clouds.
+
+![Rebuild and batch query time as the number of indexed points and queries grows](docs/images/cellmate-scaling-points-dark.png)
+
+![Rebuild and batch query time as the number of queries per batch grows](docs/images/cellmate-scaling-queries-dark.png)
+
+![Rebuild and batch query time across targeted average neighbor counts per query](docs/images/cellmate-scaling-neighbors-dark.png)
+
+![Rebuild and batch query time across requested thread counts](docs/images/cellmate-scaling-threads-dark.png)
+
 ## Installation
 
 The library is header-only. Copy `include/cellmate/` into your project, add its parent directory to the include path, and include `cellmate/neighbor_search.hpp`.

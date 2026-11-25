@@ -40,8 +40,6 @@ namespace cellmate_bench
 				}
 				return queries;
 			}
-			if (config.N_queries == config.N_points) { return points; }
-
 			cellmate_helpers::PointCloud queries;
 			queries.x.resize(config.N_queries);
 			queries.y.resize(config.N_queries);

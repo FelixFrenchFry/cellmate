@@ -7,8 +7,8 @@ namespace cellmate_bench
 	inline ComparisonMatrix comp_queries_matrix()
 	{
 		ComparisonMatrix matrix;
-		matrix.reference.N_points = 500'000;
-		matrix.reference.N_queries = 500'000;
+		matrix.reference.N_points = 1'000'000;
+		matrix.reference.N_queries = 1'000'000;
 		matrix.reference.N_target_avg_nbrs = 32.0;
 		matrix.reference.N_max_threads = 8;
 		matrix.reference.rng_seed = 67;
@@ -36,16 +36,21 @@ namespace cellmate_bench
 			// nothing
 		};
 		matrix.sweeps.N_queries = {
-			100,
-			500,
 			1000,
+			2500,
 			5000,
 			10000,
+			25000,
 			50000,
 			100000,
+			250000,
 			500000,
 			1000000, // 1 mio
-			5000000
+			2500000,
+			5000000,
+			10000000, // 10 mio
+
+			// TODO: benchmark up to 100 mio on server CPU node?
 		};
 		matrix.sweeps.N_target_avg_nbrs = {
 			// nothing

@@ -20,6 +20,6 @@ namespace cellmate_bench
 		ComparisonModeValues modes;
 		OperationValues operations;
 		SweepValues sweeps;
-		bool queries_follow_points = false; // the points sweep queries every point once (N_queries = N_points)
+		bool queries_follow_points = false; // keep query and point counts equal in the points sweep
 	};
 }
