@@ -88,7 +88,6 @@ The serial comparison runs the operations on a single thread. Across four point 
 <summary>Measurements (40 rows)</summary>
 
 Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Cores, 96 GB of DDR5 6000 MT/s
-
 1M indexed points, target average of 32 neighbors per query, 1 requested thread
 
 | Scenario | Library | Mean (ms) | Stddev (ms) | Status | Note |
@@ -144,7 +143,6 @@ Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Core
 <summary>Measurements (40 rows)</summary>
 
 Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Cores, 96 GB of DDR5 6000 MT/s
-
 1M indexed points, 1M queries, target average of 32 neighbors per query, 1 requested thread
 
 | Scenario | Library | Mean (ms) | Stddev (ms) | Status | Note |
@@ -200,7 +198,6 @@ Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Core
 <summary>Measurements (40 rows)</summary>
 
 Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Cores, 96 GB of DDR5 6000 MT/s
-
 1M indexed points, 1M queries, target average of 32 neighbors per query, 1 requested thread
 
 | Scenario | Library | Mean (ms) | Stddev (ms) | Status | Note |
@@ -260,7 +257,6 @@ The parallel comparison runs the operations on 8 requested threads. Across four 
 <summary>Measurements (40 rows)</summary>
 
 Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Cores, 96 GB of DDR5 6000 MT/s
-
 1M indexed points, target average of 32 neighbors per query, 8 requested threads
 
 | Scenario | Library | Mean (ms) | Stddev (ms) | Status | Note |
@@ -316,7 +312,6 @@ Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Core
 <summary>Measurements (40 rows)</summary>
 
 Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Cores, 96 GB of DDR5 6000 MT/s
-
 1M indexed points, 1M queries, target average of 32 neighbors per query, 8 requested threads
 
 | Scenario | Library | Mean (ms) | Stddev (ms) | Status | Note |
@@ -372,7 +367,6 @@ Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Core
 <summary>Measurements (40 rows)</summary>
 
 Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Cores, 96 GB of DDR5 6000 MT/s
-
 1M indexed points, 1M queries, target average of 32 neighbors per query, 8 requested threads
 
 | Scenario | Library | Mean (ms) | Stddev (ms) | Status | Note |
@@ -432,7 +426,6 @@ These plots show how a full index rebuild followed by batch queries scales on a 
 <summary>Measurements (130 rows)</summary>
 
 Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Cores, 96 GB of DDR5 6000 MT/s
-
 1M queries, target average of 32 neighbors per query, 8 requested threads
 
 | Indexed points | Library | Mean (ms) | Stddev (ms) | Status | Note |
@@ -578,7 +571,6 @@ Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Core
 <summary>Measurements (130 rows)</summary>
 
 Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Cores, 96 GB of DDR5 6000 MT/s
-
 1M indexed points, target average of 32 neighbors per query, 8 requested threads
 
 | Queries | Library | Mean (ms) | Stddev (ms) | Status | Note |
@@ -724,7 +716,6 @@ Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Core
 <summary>Measurements (110 rows)</summary>
 
 Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Cores, 96 GB of DDR5 6000 MT/s
-
 1M indexed points, 1M queries, 8 requested threads
 
 | Target average neighbors per query | Library | Mean (ms) | Stddev (ms) | Status | Note |
@@ -850,7 +841,6 @@ Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Core
 <summary>Measurements (80 rows)</summary>
 
 Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Cores, 96 GB of DDR5 6000 MT/s
-
 500K indexed points, 500K queries, target average of 32 neighbors per query
 
 | Requested threads | Library | Mean (ms) | Stddev (ms) | Status | Note |
@@ -1352,7 +1342,6 @@ Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Core
 <summary>Measurements (70 rows)</summary>
 
 Measured on Windows 11, MSVC 19.52.37029.0, Intel Core Ultra 7 265K, 8P/12E Cores, 96 GB of DDR5 6000 MT/s
-
 1M indexed points, 1M queries, target average of 32 neighbors per query, 8 requested threads
 
 | Library | Scenario | Peak memory (GB) | Status | Note |
