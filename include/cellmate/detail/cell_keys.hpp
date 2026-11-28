@@ -60,7 +60,7 @@ namespace cellmate
 		}
 
 		// expands the bounds by N contiguous SoA positions, returning 'false' if any coordinate is not finite
-		// (checks all exponent bits per lane, the bounds are unspecified after non-finite coordinates)
+		// (checks all exponent bits per lane, requires non-NaN initial bounds, bounds are unspecified after non-finite coordinates)
 		inline bool expand_bounds(const float* x, const float* y, const float* z, std::size_t N,
 			std::array<float, 3>& minimum, std::array<float, 3>& maximum) noexcept
 		{
@@ -145,26 +145,33 @@ namespace cellmate
 				_mm256_storeu_ps(upper[2], max_z);
 				reduce_position_bounds(lower, upper, minimum, maximum);
 #elif CELLMATE_DETAIL_SIMD_WIDTH == 128
+				const uint32x4_t infinity = vdupq_n_u32(fp32_infinity_bits);
 				float32x4_t min_x = vdupq_n_f32(minimum[0]);
 				float32x4_t min_y = vdupq_n_f32(minimum[1]);
 				float32x4_t min_z = vdupq_n_f32(minimum[2]);
 				float32x4_t max_x = vdupq_n_f32(maximum[0]);
 				float32x4_t max_y = vdupq_n_f32(maximum[1]);
 				float32x4_t max_z = vdupq_n_f32(maximum[2]);
+				uint32x4_t nonfinite = vdupq_n_u32(0);
 				for (; N - i >= N_lanes; i += N_lanes)
 				{
 					const float32x4_t px = vld1q_f32(x + i);
 					const float32x4_t py = vld1q_f32(y + i);
 					const float32x4_t pz = vld1q_f32(z + i);
-					// reject signaling NaNs before min/max can raise an invalid-operation exception
-					if (vmaxvq_u32(max_position_magnitude_bits(px, py, pz)) >= fp32_infinity_bits) { return false; }
-					min_x = vminq_f32(min_x, px);
-					min_y = vminq_f32(min_y, py);
-					min_z = vminq_f32(min_z, pz);
-					max_x = vmaxq_f32(max_x, px);
-					max_y = vmaxq_f32(max_y, py);
-					max_z = vmaxq_f32(max_z, pz);
+					// zero non-finite lanes so min/max cannot receive a signaling NaN
+					const uint32x4_t invalid = vcgeq_u32(max_position_magnitude_bits(px, py, pz), infinity);
+					nonfinite = vorrq_u32(nonfinite, invalid);
+					const float32x4_t safe_x = vreinterpretq_f32_u32(vbicq_u32(vreinterpretq_u32_f32(px), invalid));
+					const float32x4_t safe_y = vreinterpretq_f32_u32(vbicq_u32(vreinterpretq_u32_f32(py), invalid));
+					const float32x4_t safe_z = vreinterpretq_f32_u32(vbicq_u32(vreinterpretq_u32_f32(pz), invalid));
+					min_x = vminq_f32(min_x, safe_x);
+					min_y = vminq_f32(min_y, safe_y);
+					min_z = vminq_f32(min_z, safe_z);
+					max_x = vmaxq_f32(max_x, safe_x);
+					max_y = vmaxq_f32(max_y, safe_y);
+					max_z = vmaxq_f32(max_z, safe_z);
 				}
+				if (vmaxvq_u32(nonfinite) != 0) { return false; }
 
 				minimum = { vminvq_f32(min_x), vminvq_f32(min_y), vminvq_f32(min_z) };
 				maximum = { vmaxvq_f32(max_x), vmaxvq_f32(max_y), vmaxvq_f32(max_z) };

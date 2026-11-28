@@ -11,7 +11,7 @@ The class `cellmate::NeighborSearch` finds every point within a radius of a quer
 * **Time** - rebuilds take O(N) time for N points, using a radix sort on the Morton keys and a single pass to build the cells. A query costs O(log C + M) for C occupied cells and M candidate points in its surrounding cells, which is O(M) in practice thanks to a cell prefix directory and lookup cache. In comparison, tree-based data structures like k-d trees and octrees typically take O(N log N) to build and O(log N + M) per query.
 * **Memory** - the compact data structure uses O(N) memory for N points, since only occupied cells are stored, independent of the size of the domain. Sparse or clustered point clouds therefore cost no more memory than a dense distribution of points.
 * **Parallelism** - the rebuild and batch query pipelines are heavily parallelized using OpenMP directives. Additionally, each function has a sequential fallback version for builds without OpenMP or when this execution mode is specified.
-* **Vectorization** - distance checks, cell keys, candidate gathering, ... and other hot loops are vectorized using SIMD with AVX2 or AVX-512 intrinsics, selected at compile time. Additionally, each operation has a scalar fallback version with bit-identical results for CPUs or builds without these instruction sets.
+* **Vectorization** - distance checks, cell keys, candidate gathering, ... and other hot loops are vectorized using SIMD with AVX2 or AVX-512 or NEON64 intrinsics, selected at compile time. `AUTO` is the default, and you can select `SCALAR`, `NEON64`, `AVX256`, or `AVX512` explicitly. Additionally, each operation has a scalar fallback version with bit-identical results for CPUs or builds without these instruction sets.
 
 ## Usage
 

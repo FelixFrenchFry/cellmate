@@ -1268,8 +1268,9 @@ namespace cellmate
 		void rebuild_seq(const Positions& positions, std::uint32_t N_points)
 		{
 			// compute minimum and maximum (x,y,z)
-			std::array<float, 3> minimum{ positions.x(0), positions.y(0), positions.z(0) };
-			std::array<float, 3> maximum = minimum;
+			const float max_finite = (std::numeric_limits<float>::max)();
+			std::array<float, 3> minimum{ max_finite, max_finite, max_finite };
+			std::array<float, 3> maximum{ -max_finite, -max_finite, -max_finite };
 			if (!expand_bounds(positions, 0, N_points, minimum, maximum))
 			{
 				throw std::invalid_argument("'cellmate::rebuild()' coordinates must be finite");
@@ -1342,13 +1343,14 @@ namespace cellmate
 
 			// compute minimum and maximum (x,y,z)
 			// (compute local bounds per thread, then merge into grid bounds)
-			std::array<float, 3> minimum{ positions.x(0), positions.y(0), positions.z(0) };
-			std::array<float, 3> maximum = minimum;
+			const float max_finite = (std::numeric_limits<float>::max)();
+			std::array<float, 3> minimum{ max_finite, max_finite, max_finite };
+			std::array<float, 3> maximum{ -max_finite, -max_finite, -max_finite };
 			bool invalid = false;
 			#pragma omp parallel num_threads(N_threads)
 			{
-				std::array<float, 3> local_min{ positions.x(0), positions.y(0), positions.z(0) };
-				std::array<float, 3> local_max = local_min;
+				std::array<float, 3> local_min{ max_finite, max_finite, max_finite };
+				std::array<float, 3> local_max{ -max_finite, -max_finite, -max_finite };
 				bool local_invalid = false;
 
 				#pragma omp for schedule(static)

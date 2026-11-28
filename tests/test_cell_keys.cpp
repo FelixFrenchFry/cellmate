@@ -175,6 +175,32 @@ TEST(NeighborCellKeys, NeonBoundsRejectSignalingNaNWithoutInvalidException)
 	EXPECT_FALSE(valid);
 	EXPECT_EQ(invalid, 0);
 }
+
+TEST(NeighborSearchRebuild, NeonRebuildRejectsSignalingNaNWithoutInvalidException)
+{
+	constexpr std::size_t N_lanes = cellmate::detail::DistQuery::N_lanes;
+	const std::uint32_t signaling_nan_bits = 0x7f800001u;
+	std::vector<float> x(8195, 0.0f);
+	const std::vector<float> zeros(x.size(), 0.0f);
+	cellmate::NeighborSearch search(1.0f);
+
+	// cover index 0 (initial bounds) and a later SIMD lane for both sequential and parallel rebuilds
+	for (cellmate::ComputeMode execution : { cellmate::ComputeMode::seq, cellmate::ComputeMode::par })
+	{
+		for (std::size_t index : { std::size_t(0), N_lanes - 1 })
+		{
+			SCOPED_TRACE(::testing::Message() << "'execution' = " << static_cast<int>(execution) << ", index = " << index);
+			std::memcpy(&x[index], &signaling_nan_bits, sizeof(signaling_nan_bits));
+			std::fenv_t previous_env;
+			ASSERT_EQ(std::feholdexcept(&previous_env), 0);
+			EXPECT_THROW(search.rebuild(x.data(), zeros.data(), zeros.data(), x.size(), execution), std::invalid_argument);
+			const int invalid = std::fetestexcept(FE_INVALID);
+			ASSERT_EQ(std::fesetenv(&previous_env), 0);
+			EXPECT_EQ(invalid, 0);
+			x[index] = 0.0f;
+		}
+	}
+}
 #endif
 
 #if CELLMATE_DETAIL_HAS_SIMD_POSITION_SCANS
