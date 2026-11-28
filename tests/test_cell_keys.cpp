@@ -5,15 +5,17 @@
 
 #include <algorithm>
 #include <array>
+#include <cfenv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <random>
 #include <stdexcept>
 #include <vector>
 
-#if CELLMATE_DETAIL_SIMD_WIDTH != 0
+#if CELLMATE_DETAIL_HAS_SIMD_CELL_KEYS
 namespace
 {
 	// unclamped fp64 cell coordinate relative to the grid origin, as 'NeighborSearch' computes it
@@ -149,6 +151,33 @@ TEST(NeighborCellKeys, SimdKeysMatchScalarReference)
 	}
 }
 
+#endif
+
+#if defined(CELLMATE_SIMD_NEON64)
+static_assert(CELLMATE_DETAIL_HAS_SIMD_POSITION_SCANS, "NEON64 tests must exercise SIMD position scans");
+
+TEST(NeighborCellKeys, NeonBoundsRejectSignalingNaNWithoutInvalidException)
+{
+	constexpr std::size_t N_lanes = cellmate::detail::DistQuery::N_lanes;
+	const std::uint32_t signaling_nan_bits = 0x7f800001u;
+	std::array<float, N_lanes> x{};
+	const std::array<float, N_lanes> zeros{};
+	std::memcpy(&x.back(), &signaling_nan_bits, sizeof(signaling_nan_bits));
+	std::array<float, 3> minimum{}, maximum{};
+
+	// Keep the scan as a runtime call so the known input cannot be folded away.
+	auto* volatile expand_bounds = &cellmate::detail::expand_bounds;
+	std::fenv_t previous_env;
+	ASSERT_EQ(std::feholdexcept(&previous_env), 0);
+	const bool valid = expand_bounds(x.data(), zeros.data(), zeros.data(), N_lanes, minimum, maximum);
+	const int invalid = std::fetestexcept(FE_INVALID);
+	ASSERT_EQ(std::fesetenv(&previous_env), 0);
+	EXPECT_FALSE(valid);
+	EXPECT_EQ(invalid, 0);
+}
+#endif
+
+#if CELLMATE_DETAIL_HAS_SIMD_POSITION_SCANS
 // verifies SIMD bounds and finiteness scans against scalar scans
 // (every length up to three SIMD batches plus a remainder, with NaN and infinities at every index and axis)
 TEST(NeighborCellKeys, SimdScansMatchScalarScans)

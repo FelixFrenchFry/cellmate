@@ -19,7 +19,7 @@
 	_Pragma("GCC optimize (\"fp-contract=off\")")
 #define CELLMATE_DETAIL_FP_END _Pragma("GCC pop_options")
 #else
-// older MSVC requires caller-selected '/fp:strict' for AVX2 targets
+// older MSVC requires caller-selected '/fp:strict' for AVX2 targets and NEON64 builds
 // (its 'float_control' stack does not save and restore contraction settings)
 #define CELLMATE_DETAIL_FP_BEGIN
 #define CELLMATE_DETAIL_FP_END

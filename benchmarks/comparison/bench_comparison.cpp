@@ -205,7 +205,7 @@ namespace cellmate_bench
 						adapter.rebuild();
 					}
 					run_queries(config.N_queries);
-					benchmark::DoNotOptimize(adapter);
+					benchmark::DoNotOptimize(&adapter);
 					benchmark::DoNotOptimize(output.data());
 					benchmark::DoNotOptimize(results.neighbors.data());
 					benchmark::DoNotOptimize(results.offsets.data());
@@ -423,7 +423,7 @@ int main(int argc, char** argv)
 	benchmark::AddCustomContext("build_config", CELLMATE_COMPARISON_CONFIG);
 	benchmark::AddCustomContext("build_flags", CELLMATE_COMPARISON_FLAGS);
 	benchmark::AddCustomContext("cellmate_simd", CELLMATE_DETAIL_SIMD_WIDTH == 512 ? "AVX-512"
-		: CELLMATE_DETAIL_SIMD_WIDTH == 256 ? "AVX2" : "scalar");
+		: CELLMATE_DETAIL_SIMD_WIDTH == 256 ? "AVX2" : CELLMATE_DETAIL_SIMD_WIDTH == 128 ? "NEON64" : "scalar");
 #ifdef _OPENMP
 	benchmark::AddCustomContext("openmp", std::to_string(_OPENMP));
 #else

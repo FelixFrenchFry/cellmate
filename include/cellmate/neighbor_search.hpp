@@ -1929,9 +1929,9 @@ namespace cellmate
 			}
 		}
 
-#if CELLMATE_DETAIL_SIMD_WIDTH != 0
+#if CELLMATE_DETAIL_HAS_SIMD_POSITION_SCANS
 		// SoA versions with SIMD batches over contiguous coordinates
-		// (AoS positions and the scalar backend use the versions above)
+		// (AoS positions and backends without these routines use the versions above)
 		static bool expand_bounds(const detail::Positions_SoA& positions, std::size_t begin, std::size_t end,
 			std::array<float, 3>& minimum, std::array<float, 3>& maximum)
 		{
@@ -1943,7 +1943,9 @@ namespace cellmate
 		{
 			return detail::all_finite(positions.x_ + begin, positions.y_ + begin, positions.z_ + begin, end - begin);
 		}
+#endif
 
+#if CELLMATE_DETAIL_HAS_SIMD_CELL_KEYS
 		// converts SoA points to Morton keys like 'grid_cell_coord()' and 'morton_key()', without extent checks
 		// (debug builds assert each key against the scalar version)
 		void assign_point_keys(const detail::Positions_SoA& positions, std::size_t begin, std::size_t end)

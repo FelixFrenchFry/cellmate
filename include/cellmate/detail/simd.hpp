@@ -7,8 +7,12 @@
 #endif
 
 // choose one backend for every translation unit that includes cellmate
-#if (defined(CELLMATE_SIMD_AUTO) + defined(CELLMATE_SIMD_SCALAR) + defined(CELLMATE_SIMD_AVX256) + defined(CELLMATE_SIMD_AVX512)) > 1
+#if (defined(CELLMATE_SIMD_AUTO) + defined(CELLMATE_SIMD_SCALAR) + defined(CELLMATE_SIMD_NEON64) + defined(CELLMATE_SIMD_AVX256) + defined(CELLMATE_SIMD_AVX512)) > 1
 #error "cellmate::simd backend selections must not conflict"
+#endif
+
+#if defined(CELLMATE_SIMD_NEON64) && !((defined(__aarch64__) && defined(__ARM_NEON)) || (defined(_M_ARM64) && !defined(__clang__)))
+#error "cellmate::simd 'NEON64' requires an ARM64 compiler target with NEON enabled"
 #endif
 
 #if defined(CELLMATE_SIMD_AVX256) && !defined(__AVX2__)
@@ -23,17 +27,17 @@
 #error "cellmate requires float evaluation precision ('FLT_EVAL_METHOD' == 0), use '-mfpmath=sse' on GCC x86"
 #endif
 
-// older MSVC may contract distance checks into FMA on AVX2 targets
-#if defined(_MSC_VER) && !defined(__clang__) && _MSC_VER < 1930 && defined(__AVX2__) && !defined(_M_FP_STRICT)
-#error "cellmate requires '/fp:strict' on MSVC before Visual Studio 2022 with AVX2 compiler targets, enable '/fp:strict' or target below AVX2"
+// older MSVC may contract distance checks into FMA on AVX2 and NEON64 builds
+#if defined(_MSC_VER) && !defined(__clang__) && _MSC_VER < 1930 && !defined(_M_FP_STRICT) && \
+	(defined(__AVX2__) || defined(CELLMATE_SIMD_NEON64))
+#error "cellmate requires '/fp:strict' on MSVC before Visual Studio 2022 when targeting AVX2 or selecting the NEON64 backend"
 #endif
 
 // 'AUTO' selects 'AVX256' whenever AVX2 is available
-// ('AVX512' is only selected when 'CELLMATE_SIMD_AVX512' is explicitly defined)
+// ('NEON64' and 'AVX512' require explicit selection)
 #if defined(CELLMATE_SIMD_AVX512)
 #define CELLMATE_DETAIL_SIMD_WIDTH 512
 #include "simd_avx512.hpp"
-
 namespace cellmate
 {
 	namespace detail
@@ -43,10 +47,21 @@ namespace cellmate
 		using DistBox = DistBoxAVX512;
 	}
 }
+#elif defined(CELLMATE_SIMD_NEON64)
+#define CELLMATE_DETAIL_SIMD_WIDTH 128
+#include "simd_neon64.hpp"
+namespace cellmate
+{
+	namespace detail
+	{
+		using DistQuery = DistQueryNEON64;
+		using DistQueryGroup = DistQueryGroupNEON64;
+		using DistBox = DistBoxNEON64;
+	}
+}
 #elif !defined(CELLMATE_SIMD_SCALAR) && defined(__AVX2__)
 #define CELLMATE_DETAIL_SIMD_WIDTH 256
 #include "simd_avx256.hpp"
-
 namespace cellmate
 {
 	namespace detail
@@ -59,7 +74,6 @@ namespace cellmate
 #else
 #define CELLMATE_DETAIL_SIMD_WIDTH 0
 #include "simd_scalar.hpp"
-
 namespace cellmate
 {
 	namespace detail

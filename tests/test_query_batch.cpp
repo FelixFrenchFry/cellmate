@@ -33,10 +33,14 @@ namespace
 // verify that explicit test builds use the requested backend
 #if defined(CELLMATE_SIMD_SCALAR)
 static_assert(cellmate::detail::DistQuery::N_lanes == 1, "SCALAR tests must use the scalar backend");
+#elif defined(CELLMATE_SIMD_NEON64)
+static_assert(cellmate::detail::DistQuery::N_lanes == 4, "NEON64 tests must use the NEON64 backend");
 #elif defined(CELLMATE_SIMD_AVX256)
 static_assert(cellmate::detail::DistQuery::N_lanes == 8, "AVX256 tests must use the AVX256 backend");
 #elif defined(CELLMATE_SIMD_AVX512)
 static_assert(cellmate::detail::DistQuery::N_lanes == 16, "AVX512 tests must use the AVX512 backend");
+#elif defined(CELLMATE_SIMD_AUTO) && (defined(__aarch64__) || defined(_M_ARM64))
+static_assert(cellmate::detail::is_scalar_backend, "AUTO tests on ARM64 must use the scalar backend");
 #endif
 
 // verifies query-lane masks and the same float cutoff rounding as single-query filtering

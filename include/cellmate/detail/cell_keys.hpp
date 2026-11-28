@@ -9,6 +9,18 @@
 #include "fp_control.hpp"
 #include "simd.hpp"
 
+#if CELLMATE_DETAIL_SIMD_WIDTH == 256 || CELLMATE_DETAIL_SIMD_WIDTH == 512
+#define CELLMATE_DETAIL_HAS_SIMD_CELL_KEYS 1
+#else
+#define CELLMATE_DETAIL_HAS_SIMD_CELL_KEYS 0
+#endif
+
+#if CELLMATE_DETAIL_SIMD_WIDTH == 128 || CELLMATE_DETAIL_SIMD_WIDTH == 256 || CELLMATE_DETAIL_SIMD_WIDTH == 512
+#define CELLMATE_DETAIL_HAS_SIMD_POSITION_SCANS 1
+#else
+#define CELLMATE_DETAIL_HAS_SIMD_POSITION_SCANS 0
+#endif
+
 // match backend settings so position scans and cell keys can inline into the rebuild and batch loops
 CELLMATE_DETAIL_FP_BEGIN
 
@@ -16,7 +28,37 @@ namespace cellmate
 {
 	namespace detail
 	{
-#if CELLMATE_DETAIL_SIMD_WIDTH == 512 || CELLMATE_DETAIL_SIMD_WIDTH == 256
+#if CELLMATE_DETAIL_SIMD_WIDTH == 128
+		constexpr std::uint32_t fp32_infinity_bits = 0x7f800000u;
+
+		// unsigned magnitude bits order finite floats below both infinities and NaNs
+		inline uint32x4_t max_position_magnitude_bits(float32x4_t x, float32x4_t y, float32x4_t z) noexcept
+		{
+			const uint32x4_t magnitude = vdupq_n_u32(0x7fffffffu);
+			const uint32x4_t x_bits = vandq_u32(vreinterpretq_u32_f32(x), magnitude);
+			const uint32x4_t y_bits = vandq_u32(vreinterpretq_u32_f32(y), magnitude);
+			const uint32x4_t z_bits = vandq_u32(vreinterpretq_u32_f32(z), magnitude);
+			return vmaxq_u32(vmaxq_u32(x_bits, y_bits), z_bits);
+		}
+#endif
+
+#if CELLMATE_DETAIL_HAS_SIMD_POSITION_SCANS
+		// reduces the stored per-lane bounds from the AVX scans
+		inline void reduce_position_bounds(const float (&lower)[3][DistQuery::N_lanes],
+			const float (&upper)[3][DistQuery::N_lanes], std::array<float, 3>& minimum,
+			std::array<float, 3>& maximum) noexcept
+		{
+			for (std::size_t lane = 0; lane < DistQuery::N_lanes; lane++)
+			{
+				minimum[0] = (std::min)(minimum[0], lower[0][lane]);
+				minimum[1] = (std::min)(minimum[1], lower[1][lane]);
+				minimum[2] = (std::min)(minimum[2], lower[2][lane]);
+				maximum[0] = (std::max)(maximum[0], upper[0][lane]);
+				maximum[1] = (std::max)(maximum[1], upper[1][lane]);
+				maximum[2] = (std::max)(maximum[2], upper[2][lane]);
+			}
+		}
+
 		// expands the bounds by N contiguous SoA positions, returning 'false' if any coordinate is not finite
 		// (checks all exponent bits per lane, the bounds are unspecified after non-finite coordinates)
 		inline bool expand_bounds(const float* x, const float* y, const float* z, std::size_t N,
@@ -26,7 +68,6 @@ namespace cellmate
 			std::size_t i = 0;
 			if (N >= N_lanes)
 			{
-				float lower[3][N_lanes], upper[3][N_lanes];
 #if CELLMATE_DETAIL_SIMD_WIDTH == 512
 				const __m512i exponent = _mm512_set1_epi32(0x7f800000);
 				// init minimums and maximums
@@ -57,13 +98,15 @@ namespace cellmate
 				if (nonfinite != 0) { return false; }
 
 				// store the per-lane results for the reduction
+				float lower[3][N_lanes], upper[3][N_lanes];
 				_mm512_storeu_ps(lower[0], min_x);
 				_mm512_storeu_ps(lower[1], min_y);
 				_mm512_storeu_ps(lower[2], min_z);
 				_mm512_storeu_ps(upper[0], max_x);
 				_mm512_storeu_ps(upper[1], max_y);
 				_mm512_storeu_ps(upper[2], max_z);
-#else // CELLMATE_DETAIL_SIMD_WIDTH == 256
+				reduce_position_bounds(lower, upper, minimum, maximum);
+#elif CELLMATE_DETAIL_SIMD_WIDTH == 256
 				const __m256i exponent = _mm256_set1_epi32(0x7f800000);
 				// init minimums and maximums
 				__m256 min_x = _mm256_set1_ps(minimum[0]);
@@ -93,23 +136,39 @@ namespace cellmate
 				if (!_mm256_testz_si256(nonfinite, nonfinite)) { return false; }
 
 				// store the per-lane results for the reduction
+				float lower[3][N_lanes], upper[3][N_lanes];
 				_mm256_storeu_ps(lower[0], min_x);
 				_mm256_storeu_ps(lower[1], min_y);
 				_mm256_storeu_ps(lower[2], min_z);
 				_mm256_storeu_ps(upper[0], max_x);
 				_mm256_storeu_ps(upper[1], max_y);
 				_mm256_storeu_ps(upper[2], max_z);
-#endif
-				// reduce the lanes into the min/max bounds
-				for (std::size_t lane = 0; lane < N_lanes; lane++)
+				reduce_position_bounds(lower, upper, minimum, maximum);
+#elif CELLMATE_DETAIL_SIMD_WIDTH == 128
+				float32x4_t min_x = vdupq_n_f32(minimum[0]);
+				float32x4_t min_y = vdupq_n_f32(minimum[1]);
+				float32x4_t min_z = vdupq_n_f32(minimum[2]);
+				float32x4_t max_x = vdupq_n_f32(maximum[0]);
+				float32x4_t max_y = vdupq_n_f32(maximum[1]);
+				float32x4_t max_z = vdupq_n_f32(maximum[2]);
+				for (; N - i >= N_lanes; i += N_lanes)
 				{
-					minimum[0] = (std::min)(minimum[0], lower[0][lane]);
-					minimum[1] = (std::min)(minimum[1], lower[1][lane]);
-					minimum[2] = (std::min)(minimum[2], lower[2][lane]);
-					maximum[0] = (std::max)(maximum[0], upper[0][lane]);
-					maximum[1] = (std::max)(maximum[1], upper[1][lane]);
-					maximum[2] = (std::max)(maximum[2], upper[2][lane]);
+					const float32x4_t px = vld1q_f32(x + i);
+					const float32x4_t py = vld1q_f32(y + i);
+					const float32x4_t pz = vld1q_f32(z + i);
+					// reject signaling NaNs before min/max can raise an invalid-operation exception
+					if (vmaxvq_u32(max_position_magnitude_bits(px, py, pz)) >= fp32_infinity_bits) { return false; }
+					min_x = vminq_f32(min_x, px);
+					min_y = vminq_f32(min_y, py);
+					min_z = vminq_f32(min_z, pz);
+					max_x = vmaxq_f32(max_x, px);
+					max_y = vmaxq_f32(max_y, py);
+					max_z = vmaxq_f32(max_z, pz);
 				}
+
+				minimum = { vminvq_f32(min_x), vminvq_f32(min_y), vminvq_f32(min_z) };
+				maximum = { vmaxvq_f32(max_x), vmaxvq_f32(max_y), vmaxvq_f32(max_z) };
+#endif
 			}
 
 			// scalar remainder
@@ -152,7 +211,7 @@ namespace cellmate
 				nonfinite |= _mm512_cmpeq_epi32_mask(_mm512_and_si512(_mm512_castps_si512(pz), exponent), exponent);
 			}
 			if (nonfinite != 0) { return false; }
-#else // CELLMATE_DETAIL_SIMD_WIDTH == 256
+#elif CELLMATE_DETAIL_SIMD_WIDTH == 256
 			const __m256i exponent = _mm256_set1_epi32(0x7f800000);
 			// check all exponent bits per lane to detect non-finite coordinates
 			__m256i nonfinite = _mm256_setzero_si256();
@@ -166,6 +225,16 @@ namespace cellmate
 				nonfinite = _mm256_or_si256(nonfinite, _mm256_cmpeq_epi32(_mm256_and_si256(_mm256_castps_si256(pz), exponent), exponent));
 			}
 			if (!_mm256_testz_si256(nonfinite, nonfinite)) { return false; }
+#elif CELLMATE_DETAIL_SIMD_WIDTH == 128
+			uint32x4_t max_magnitude = vdupq_n_u32(0);
+			for (; N - i >= N_lanes; i += N_lanes)
+			{
+				const float32x4_t px = vld1q_f32(x + i);
+				const float32x4_t py = vld1q_f32(y + i);
+				const float32x4_t pz = vld1q_f32(z + i);
+				max_magnitude = vmaxq_u32(max_magnitude, max_position_magnitude_bits(px, py, pz));
+			}
+			if (vmaxvq_u32(max_magnitude) >= fp32_infinity_bits) { return false; }
 #endif
 
 			// scalar remainder
@@ -251,7 +320,7 @@ namespace cellmate
 		}
 #endif
 
-#if CELLMATE_DETAIL_SIMD_WIDTH == 512 || CELLMATE_DETAIL_SIMD_WIDTH == 256
+#if CELLMATE_DETAIL_HAS_SIMD_CELL_KEYS
 		// converts contiguous points inside the grid into unclamped Morton keys of their cells
 		// (requires 'N_key_lanes' floats per array with cell coordinates within the grid, matches the rounding of 'NeighborSearch')
 		inline void point_cell_keys(const float* x, const float* y, const float* z,

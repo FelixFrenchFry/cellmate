@@ -120,25 +120,145 @@ jobs:
       - name: Run tests
         run: ./${{ format(matrix.toolchain.executable, matrix.build_type) }}
 
+  tests_arm64:
+    name: ARM64 / ${{ matrix.toolchain.name }} / C++${{ matrix.cpp_standard }} / ${{ matrix.build_type }} / ${{ matrix.simd }} / OpenMP ${{ matrix.openmp }}
+    runs-on: ${{ matrix.toolchain.os }}
+    # allow unoptimized Debug builds (with debug STL checks) more time
+    timeout-minutes: ${{ matrix.build_type == 'Debug' && 60 || 20 }}
+    strategy:
+      fail-fast: false
+      # total of 34 combinations (28 C++14 and 6 C++23)
+      matrix:
+        compiler: [gcc-13, clang-18, apple-clang, msvc]
+        cpp_standard: [14, 23]
+        build_type: [Release, Debug]
+        simd: [SCALAR, NEON64, AUTO]
+        openmp: ['OFF', 'ON']
+        exclude:
+          # run with OpenMP on Linux
+          - compiler: apple-clang
+            openmp: 'ON'
+          - compiler: msvc
+            openmp: 'ON'
+          # check AUTO in Release without OpenMP
+          - simd: AUTO
+            build_type: Debug
+          - simd: AUTO
+            openmp: 'ON'
+          # run with C++23 in Release with NEON64
+          - cpp_standard: 23
+            build_type: Debug
+          - cpp_standard: 23
+            simd: SCALAR
+          - cpp_standard: 23
+            simd: AUTO
+        include:
+          # GCC 13 on Ubuntu 24.04
+          - compiler: gcc-13
+            toolchain:
+              name: GCC 13
+              os: ubuntu-24.04-arm
+              generator: Ninja
+              configure_args: -DCMAKE_CXX_COMPILER=g++-13
+              executable: build/tests/cellmate_tests
+          # Clang 18 on Ubuntu 24.04
+          - compiler: clang-18
+            toolchain:
+              name: Clang 18
+              os: ubuntu-24.04-arm
+              generator: Ninja
+              configure_args: -DCMAKE_CXX_COMPILER=clang++-18
+              compiler_version: '18'
+              executable: build/tests/cellmate_tests
+          # AppleClang on macOS 15
+          - compiler: apple-clang
+            toolchain:
+              name: AppleClang
+              os: macos-15
+              generator: Ninja
+              configure_args: -DCMAKE_CXX_COMPILER=/usr/bin/clang++ -DCMAKE_OSX_ARCHITECTURES=arm64
+              executable: build/tests/cellmate_tests
+          # MSVC (VS 2026) on Windows 11
+          - compiler: msvc
+            toolchain:
+              name: MSVC (VS 2026)
+              os: windows-11-vs2026-arm
+              generator: Visual Studio 18 2026
+              configure_args: -A ARM64 -T v145
+              executable: 'build/tests/{0}/cellmate_tests.exe'
+    # use 2 OpenMP threads without dynamic team-size adjustment
+    env:
+      OMP_NUM_THREADS: '2'
+      OMP_DYNAMIC: 'FALSE'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Clang OpenMP runtime
+        if: matrix.compiler == 'clang-18' && matrix.openmp == 'ON'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libomp-${{ matrix.toolchain.compiler_version }}-dev
+
+      - name: Configure tests
+        run: >-
+          cmake -S . -B build -G "${{ matrix.toolchain.generator }}"
+          ${{ matrix.toolchain.configure_args }}
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_CXX_STANDARD=${{ matrix.cpp_standard }}
+          -DCMAKE_CXX_STANDARD_REQUIRED=ON
+          -DCMAKE_CXX_EXTENSIONS=OFF
+          -DCELLMATE_BUILD_TESTS=ON
+          -DCELLMATE_BUILD_BENCHMARKS=ON
+          -DCELLMATE_SIMD=${{ matrix.simd }}
+          -DCELLMATE_ENABLE_OPENMP=${{ matrix.openmp }}
+
+      - name: Build tests
+        run: cmake --build build --config ${{ matrix.build_type }} --target cellmate_tests --parallel 2
+
+      - name: Run tests
+        run: ./${{ format(matrix.toolchain.executable, matrix.build_type) }}
+
   # run with memory (ASan) and undefined-behavior (UBSan) checks
   sanitizers:
-    name: Clang 21 / C++14 / ${{ matrix.simd }} / OpenMP ${{ matrix.openmp }} / ASan + UBSan
-    runs-on: ubuntu-26.04
+    name: ${{ matrix.toolchain.name }} / C++14 / ${{ matrix.simd }} / OpenMP ${{ matrix.openmp }} / ASan + UBSan
+    runs-on: ${{ matrix.toolchain.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      # total of 4 combinations (2 backends x 2 OpenMP settings)
+      # total of 8 combinations (2 architectures x 2 backends x 2 OpenMP settings)
       matrix:
-        simd: [SCALAR, AVX256]
+        arch: [x64, arm64]
+        simd: [SCALAR, AVX256, NEON64]
         openmp: ['OFF', 'ON']
+        exclude:
+          - arch: x64
+            simd: NEON64
+          - arch: arm64
+            simd: AVX256
+        include:
+          # Clang 21 on Ubuntu 26.04
+          - arch: x64
+            toolchain:
+              name: Clang 21
+              os: ubuntu-26.04
+              compiler_version: '21'
+          # Clang 18 on Ubuntu 24.04 (ARM64)
+          - arch: arm64
+            toolchain:
+              name: ARM64 / Clang 18
+              os: ubuntu-24.04-arm
+              compiler_version: '18'
     # use 2 OpenMP threads without dynamic team-size adjustment
     env:
       OMP_NUM_THREADS: '2'
       OMP_DYNAMIC: 'FALSE'
       ASAN_OPTIONS: 'detect_leaks=1:halt_on_error=1'
       LSAN_OPTIONS: 'suppressions=${{ github.workspace }}/.github/lsan.supp'
-      ASAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer-21
-      UBSAN_OPTIONS: 'print_stacktrace=1:halt_on_error=1:external_symbolizer_path=/usr/bin/llvm-symbolizer-21'
+      ASAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer-${{ matrix.toolchain.compiler_version }}
+      UBSAN_OPTIONS: 'print_stacktrace=1:halt_on_error=1:external_symbolizer_path=/usr/bin/llvm-symbolizer-${{ matrix.toolchain.compiler_version }}'
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -148,21 +268,21 @@ jobs:
       - name: Install sanitizer runtime and symbolizer
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libclang-rt-21-dev llvm-21
+          sudo apt-get install --no-install-recommends -y libclang-rt-${{ matrix.toolchain.compiler_version }}-dev llvm-${{ matrix.toolchain.compiler_version }}
 
       - name: Install Clang OpenMP runtime
         if: matrix.openmp == 'ON'
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libomp-21-dev
+          sudo apt-get install --no-install-recommends -y libomp-${{ matrix.toolchain.compiler_version }}-dev
 
       - name: Configure tests
         run: >-
           cmake -S . -B build -G Ninja
-          -DCMAKE_CXX_COMPILER=clang++-21
+          -DCMAKE_CXX_COMPILER=clang++-${{ matrix.toolchain.compiler_version }}
           "-DCMAKE_PROJECT_cellmate_INCLUDE=${{ github.workspace }}/.github/check_compiler.cmake"
           -DCELLMATE_CI_COMPILER_ID=Clang
-          -DCELLMATE_CI_COMPILER_VERSION=21
+          -DCELLMATE_CI_COMPILER_VERSION=${{ matrix.toolchain.compiler_version }}
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DCMAKE_CXX_STANDARD=14
           -DCMAKE_CXX_STANDARD_REQUIRED=ON

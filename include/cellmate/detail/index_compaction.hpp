@@ -60,6 +60,44 @@ namespace cellmate
 			return _mm256_srlv_epi32(_mm256_set1_epi32(static_cast<int>(shuffle_table[mask & 0xffu])),
 				_mm256_setr_epi32(0, 4, 8, 12, 16, 20, 24, 28));
 		}
+#elif CELLMATE_DETAIL_SIMD_WIDTH == 128
+		struct LaneShuffleNEON64
+		{
+			std::uint8_t byte_indices[16];
+			std::uint8_t N_selected;
+
+			void pack(const void* values, void* packed) const noexcept
+			{
+				const uint8x16_t bytes = vld1q_u8(static_cast<const unsigned char*>(values));
+				vst1q_u8(static_cast<unsigned char*>(packed), vqtbl1q_u8(bytes, vld1q_u8(byte_indices)));
+			}
+		};
+
+		// move selected lanes to the front in order, four bytes per lane
+		// (byte index 16 zeroes unused output bytes)
+		inline const LaneShuffleNEON64& contiguous_lane_shuffle(unsigned mask) noexcept
+		{
+			static_assert(DistQuery::N_lanes == 4, "NEON64 compaction requires 4 lanes");
+			static constexpr LaneShuffleNEON64 shuffle_table[16]{
+				{ { 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16 }, 0 },
+				{ {  0,  1,  2,  3, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16 }, 1 },
+				{ {  4,  5,  6,  7, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16 }, 1 },
+				{ {  0,  1,  2,  3,  4,  5,  6,  7, 16, 16, 16, 16, 16, 16, 16, 16 }, 2 },
+				{ {  8,  9, 10, 11, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16 }, 1 },
+				{ {  0,  1,  2,  3,  8,  9, 10, 11, 16, 16, 16, 16, 16, 16, 16, 16 }, 2 },
+				{ {  4,  5,  6,  7,  8,  9, 10, 11, 16, 16, 16, 16, 16, 16, 16, 16 }, 2 },
+				{ {  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 16, 16, 16, 16 }, 3 },
+				{ { 12, 13, 14, 15, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16 }, 1 },
+				{ {  0,  1,  2,  3, 12, 13, 14, 15, 16, 16, 16, 16, 16, 16, 16, 16 }, 2 },
+				{ {  4,  5,  6,  7, 12, 13, 14, 15, 16, 16, 16, 16, 16, 16, 16, 16 }, 2 },
+				{ {  0,  1,  2,  3,  4,  5,  6,  7, 12, 13, 14, 15, 16, 16, 16, 16 }, 3 },
+				{ {  8,  9, 10, 11, 12, 13, 14, 15, 16, 16, 16, 16, 16, 16, 16, 16 }, 2 },
+				{ {  0,  1,  2,  3,  8,  9, 10, 11, 12, 13, 14, 15, 16, 16, 16, 16 }, 3 },
+				{ {  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16, 16, 16, 16 }, 3 },
+				{ {  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15 }, 4 }
+			};
+			return shuffle_table[mask & 0xfu];
+		}
 #endif
 
 		// packs floats of a contiguous array selected by the mask into 'packed'
@@ -73,6 +111,8 @@ namespace cellmate
 #elif CELLMATE_DETAIL_SIMD_WIDTH == 256
 			static_assert(DistQuery::N_lanes == 8, "AVX2 float compaction requires 8 lanes");
 			_mm256_storeu_ps(packed, _mm256_permutevar8x32_ps(_mm256_loadu_ps(values), contiguous_lane_shuffle(mask)));
+#elif CELLMATE_DETAIL_SIMD_WIDTH == 128
+			contiguous_lane_shuffle(mask).pack(values, packed);
 #else
 			// collect matching values one at a time
 			while (mask != 0)
@@ -83,7 +123,7 @@ namespace cellmate
 #endif
 		}
 
-		// gathers x, y, z per lane through the point indices, loading only the valid lanes
+		// gathers x, y, z through the point indices and zeroes the inactive lanes
 		// (computes offsets once for all coordinates, which must fit signed 32 bits, as SIMD gathers require)
 		inline void gather_coords(const std::array<const float*, 3>& coords, const std::uint32_t* indices, std::size_t stride,
 			std::size_t N_valid, float (&gathered)[3][DistQuery::N_lanes]) noexcept
@@ -122,13 +162,20 @@ namespace cellmate
 				_mm256_storeu_ps(gathered[2], _mm256_mask_i32gather_ps(_mm256_setzero_ps(), coords[2], offsets, valid, 4));
 			}
 #else
-			// copy the single lane's coordinates from its bytes
-			// (avoids undefined behavior from indexing cast AoS 'float*' bases, unused by the scalar backend)
-			(void)N_valid;
-			const std::size_t offset_bytes = std::size_t(indices[0]) * stride * sizeof(float);
-			std::memcpy(&gathered[0][0], reinterpret_cast<const unsigned char*>(coords[0]) + offset_bytes, sizeof(float));
-			std::memcpy(&gathered[1][0], reinterpret_cast<const unsigned char*>(coords[1]) + offset_bytes, sizeof(float));
-			std::memcpy(&gathered[2][0], reinterpret_cast<const unsigned char*>(coords[2]) + offset_bytes, sizeof(float));
+			// use byte offsets so AoS member pointers need no float-array indexing
+			for (std::size_t lane = 0; lane < N_valid; lane++)
+			{
+				const std::size_t offset_bytes = std::size_t(indices[lane]) * stride * sizeof(float);
+				for (std::size_t axis = 0; axis < coords.size(); axis++)
+				{
+					const auto* bytes = reinterpret_cast<const unsigned char*>(coords[axis]);
+					std::memcpy(&gathered[axis][lane], bytes + offset_bytes, sizeof(float));
+				}
+			}
+			for (auto& axis : gathered)
+			{
+				for (std::size_t lane = N_valid; lane < DistQuery::N_lanes; lane++) { axis[lane] = 0.0f; }
+			}
 #endif
 		}
 
@@ -155,6 +202,10 @@ namespace cellmate
 #else
 			return static_cast<std::size_t>(__builtin_popcount(mask & 0xffu));
 #endif
+#elif CELLMATE_DETAIL_SIMD_WIDTH == 128
+			const auto& shuffle = contiguous_lane_shuffle(mask);
+			shuffle.pack(indices, neighbors);
+			return shuffle.N_selected;
 #else
 			// collect matching indices one at a time
 			std::size_t N_indices = 0;
